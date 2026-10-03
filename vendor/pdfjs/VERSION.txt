@@ -1,0 +1,2 @@
+pdf.js 6.3.289 (legacy build) — https://github.com/mozilla/pdf.js — Apache License 2.0
+檔名由 pdf.min.mjs / pdf.worker.min.mjs 改為 .js（內容未修改），讓任何網站主機都以 JavaScript 類型提供。
