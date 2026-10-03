@@ -106,7 +106,8 @@ export async function render({ root }) {
         !LOCAL ? h('button', { class: 'row', onclick: changePassword }, icon('key'), h('span', { class: 'grow' }, '修改密碼'), icon('chevron')) : null,
         !LOCAL ? h('button', { class: 'row danger', onclick: logout }, icon('logout'), h('span', { class: 'grow' }, '登出')) : null,
       ),
-      h('p', { class: 'center small muted', style: { marginTop: '24px' } }, `錯題閃卡 v${window.FC_CONFIG?.appVersion || ''}`),
+      h('p', { class: 'center small muted', style: { marginTop: '24px' } }, `錯題閃卡 v${window.FC_CONFIG?.appVersion || ''}`,
+        LOCAL ? ' · ' : null, LOCAL ? h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener' }, '隱私權政策與使用條款') : null),
     );
   };
 

@@ -1,6 +1,6 @@
 // 離線支援：第一次開啟就把整個 App 存起來，之後沒有網路也能使用。
 // 策略是「網路優先」：有網路時永遠拿最新版本，離線才用快取。PDF 函式庫第一次使用時才快取。
-const CACHE = 'fc-aaf1930ae4';
+const CACHE = 'fc-12b44de931';
 const SHELL = [
   './',
   'css/app.css',
@@ -10,7 +10,7 @@ const SHELL = [
   'js/views/home.js', 'js/views/practice.js', 'js/views/bank.js', 'js/views/question.js', 'js/views/editor.js',
   'js/views/import.js', 'js/views/add.js', 'js/views/papers.js', 'js/views/paper_upload.js', 'js/views/paper.js',
   'js/views/stats.js', 'js/views/settings.js', 'js/views/login.js', 'js/views/setup.js',
-  'manifest.webmanifest',
+  'manifest.webmanifest', 'privacy.html',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
 ];
 

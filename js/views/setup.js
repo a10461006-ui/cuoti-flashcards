@@ -95,7 +95,8 @@ export async function render({ root }) {
         h('b', null, '用 Google 帳號註冊'),
         signedIn || btnHost,
         h('p', { class: 'small muted', style: { margin: 0 } },
-          '登入後，你的 Google 名稱與 Email 會登記到開發者的使用者名單，只用來了解使用人數與聯絡；你的題目與練習紀錄只存在你自己的裝置，不會上傳。'),
+          '登入後，你的 Google 名稱與 Email 會登記到開發者的使用者名單，只用來了解使用人數與聯絡；你的題目與練習紀錄只存在你自己的裝置，不會上傳。',
+          h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener' }, '隱私權政策')),
         nav(() => go(1), { disabled: googleRequired() && !s.google, label: s.google ? '下一步' : googleRequired() ? '請先登入' : '略過，直接開始' }),
       );
       if (!s.google) {
