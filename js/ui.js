@@ -60,6 +60,9 @@ const ICONS = {
   tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
   shuffle: '<path d="M3 7h4l10 10h4M3 17h4l3-3M14 10l3-3h4M18 4l3 3-3 3M18 14l3 3-3 3"/>',
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".5"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v12H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
+  scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/>',
 };
 
 export function icon(name, cls = '') {
@@ -152,6 +155,81 @@ export function promptDialog({ title, label = '', value = '', placeholder = '', 
       );
     }, { onClose: (v) => resolve(v ?? null) });
   });
+}
+
+// ---- 題目附圖
+
+/** 題目附圖：點一下全螢幕放大 */
+export function figureList(images, cls = '') {
+  if (!images?.length) return null;
+  return h('div', { class: `q-figs ${cls}`.trim() }, images.map((img, i) => h('button', {
+    type: 'button', class: 'q-fig', 'aria-label': `放大第 ${i + 1} 張圖`, onclick: () => openImage(img.src),
+  }, h('img', { src: img.src, alt: `題目附圖 ${i + 1}`, width: img.w || null, height: img.h || null, loading: 'lazy', decoding: 'async' }))));
+}
+
+/** 全螢幕看圖：可以捲動，「放大」切換兩倍寬，手機也可以兩指縮放 */
+export function openImage(src) {
+  const prevFocus = document.activeElement;
+  const zoomBtn = h('button', { class: 'btn btn-sm' }, '放大');
+  const closeBtn = h('button', { class: 'btn btn-sm' }, icon('x'), '關閉');
+  const view = h('div', { class: 'img-viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': '圖片放大檢視' },
+    h('div', { class: 'img-scroll' }, h('img', { src, alt: '題目附圖（放大）' })),
+    h('div', { class: 'img-tools' }, zoomBtn, closeBtn));
+  const close = () => {
+    view.remove();
+    document.removeEventListener('keydown', onKey, true);
+    prevFocus?.focus?.();
+  };
+  const onKey = (e) => {
+    e.stopPropagation(); // 看圖時不要觸發練習頁的鍵盤快捷鍵
+    if (e.key === 'Escape') close();
+  };
+  zoomBtn.addEventListener('click', () => {
+    const on = view.classList.toggle('zoomed');
+    zoomBtn.textContent = on ? '縮小' : '放大';
+  });
+  closeBtn.addEventListener('click', close);
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(view);
+  closeBtn.focus();
+}
+
+/** 讀取照片（會依照片的方向資訊轉正）；舊版瀏覽器改用 <img> 解碼 */
+export async function loadBitmap(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      return img;
+    } catch {
+      throw new Error('無法讀取這張圖片，請改用 JPG 或 PNG');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+}
+
+/** 照片 → 縮小後的 JPEG（題目附圖用，避免佔太多空間） */
+export async function imageToDataUrl(file, maxSide = 1600) {
+  const bitmap = await loadBitmap(file);
+  const w0 = bitmap.width || bitmap.naturalWidth;
+  const h0 = bitmap.height || bitmap.naturalHeight;
+  const k = Math.min(1, maxSide / Math.max(w0, h0));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w0 * k));
+  canvas.height = Math.max(1, Math.round(h0 * k));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  const out = { src: canvas.toDataURL('image/jpeg', 0.85), w: canvas.width, h: canvas.height };
+  canvas.width = 0;
+  return out;
 }
 
 // ---- 版面

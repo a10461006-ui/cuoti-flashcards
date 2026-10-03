@@ -2,14 +2,16 @@
 import { api } from '../api.js';
 import { goBack, navigate } from '../app.js';
 import { invalidateSubjects, loadSubjects } from '../store.js';
+import { cleanInline } from '../local/textutil.js';
 import {
-  autoGrow, clear, confirmDialog, h, icon, iconButton, openSheet, promptDialog, segmented, showError, toast, topbar,
+  autoGrow, clear, confirmDialog, h, icon, iconButton, imageToDataUrl, openImage, openSheet, promptDialog, segmented, showError, toast, topbar,
 } from '../ui.js';
 
 const LETTERS = 'ABCDEFGH';
 const MAX_OPTIONS = 8;
 const MARK_POS = '✅正確';
 const MARK_NEG = '❌錯誤';
+const MAX_IMAGES = 6;
 
 export async function render({ root, params, query }) {
   const editId = params[0] ? Number(params[0]) : null;
@@ -21,13 +23,13 @@ export async function render({ root, params, query }) {
   const lastSubject = Number(localStorage.getItem('fc.lastSubject')) || null;
   const blank = () => ({
     subjectId: query.subject ? Number(query.subject) : (subjects.some((s) => s.id === lastSubject) ? lastSubject : subjects[0]?.id ?? null),
-    source: '', stem: '', answer: '', keypoint: '', mistake: '', concept: '', note: '', tags: [],
+    source: '', stem: '', answer: '', keypoint: '', mistake: '', concept: '', note: '', tags: [], images: [],
     options: ['A', 'B', 'C', 'D'].map((key) => ({ key, text: '', mark: '', mistake: '', concept: '', note: '' })),
   });
   const form = existing ? {
     subjectId: existing.subjectId, source: existing.source, stem: existing.stem, answer: existing.answer,
     keypoint: existing.keypoint, mistake: existing.mistake, concept: existing.concept, note: existing.note,
-    tags: [...existing.tags], options: existing.options.map((o) => ({ ...o })),
+    tags: [...existing.tags], options: existing.options.map((o) => ({ ...o })), images: [...(existing.images || [])],
   } : blank();
   let dirty = false;
   const touch = () => { dirty = true; };
@@ -78,6 +80,33 @@ export async function render({ root, params, query }) {
 
   const stem = autoGrow(h('textarea', { class: 'textarea', value: form.stem, placeholder: '題目內容', rows: 3 }));
   stem.addEventListener('input', () => { form.stem = stem.value; touch(); });
+
+  // ---- 題目附圖
+  const imagesHost = h('div', { class: 'img-edit' });
+  const imagePicker = (label, camera) => {
+    const input = h('input', { type: 'file', accept: 'image/*', hidden: true, multiple: !camera, capture: camera ? 'environment' : null });
+    input.addEventListener('change', async () => {
+      const files = [...input.files].slice(0, MAX_IMAGES - form.images.length);
+      input.value = '';
+      for (const file of files) {
+        try {
+          form.images.push(await imageToDataUrl(file));
+          touch();
+        } catch (err) { showError(err); }
+      }
+      drawImages();
+    });
+    return h('label', { class: 'btn btn-sm' }, icon(camera ? 'camera' : 'image'), label, input);
+  };
+  const drawImages = () => clear(imagesHost,
+    form.images.length ? h('div', { class: 'img-thumbs' }, form.images.map((img, i) => h('div', { class: 'img-thumb' },
+      h('button', { type: 'button', class: 'img-open', 'aria-label': `放大第 ${i + 1} 張圖`, onclick: () => openImage(img.src) },
+        h('img', { src: img.src, alt: `附圖 ${i + 1}` })),
+      iconButton('x', `移除第 ${i + 1} 張圖`, () => { form.images.splice(i, 1); touch(); drawImages(); }, { class: 'icon-btn img-del' }),
+    ))) : null,
+    form.images.length < MAX_IMAGES ? h('div', { class: 'btn-row img-add' }, imagePicker('拍照', true), imagePicker('選擇圖片', false)) : null,
+  );
+  drawImages();
 
   const optionsHost = h('div');
   const answerHint = h('div', { class: 'answer-hint' });
@@ -171,6 +200,7 @@ export async function render({ root, params, query }) {
       h('div', { class: 'lbl' }, h('span', null, '題目'), pasteBtn),
       stem,
     ),
+    h('div', { class: 'field' }, h('div', { class: 'lbl' }, h('span', null, '題目附圖'), h('span', { class: 'hint' }, '選填，最多 6 張')), imagesHost),
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, '選項與答案'), answerHint, optionsHost),
     h('details', { class: 'fold', open: Boolean(hasNotes) || !editId },
       h('summary', null, '詳解與筆記', h('span', { class: 'hint' }, '選填')),
@@ -218,10 +248,31 @@ export async function render({ root, params, query }) {
         close();
         toast(parsed.options.length ? `已拆出 ${parsed.options.length} 個選項${form.answer ? `，答案 ${form.answer}` : '，請點選正確答案'}` : '已填入題目');
       };
+      const ocrInfo = h('div', { class: 'small muted' });
+      const ocrInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+      ocrInput.addEventListener('change', async () => {
+        const file = ocrInput.files[0];
+        ocrInput.value = '';
+        if (!file) return;
+        try {
+          const { recognizeImages, releaseOcr } = await import('../ocr.js');
+          const text = await recognizeImages([file], (p) => {
+            ocrInfo.textContent = `${p.label}${p.progress != null ? ` ${Math.round(p.progress * 100)}%` : '…'}`;
+          });
+          releaseOcr();
+          ta.value = [ta.value.trim(), text].filter(Boolean).join('\n');
+          ocrInfo.textContent = text ? '辨識完成，請檢查文字後按「拆解」' : '沒有辨識到文字，請拍清楚一點再試';
+        } catch (err) {
+          ocrInfo.textContent = '';
+          showError(err);
+        }
+      });
       return h('div', null,
         h('h3', null, '貼上整題'),
-        h('p', { class: 'msg small' }, '支援 (A)/(B)、（A）、A. 等選項格式。'),
+        h('p', { class: 'msg small' }, '支援 (A)/(B)、（A）、A. 等選項格式。也可以拍照，用文字辨識（OCR）把題目轉成文字。'),
         ta,
+        h('div', { class: 'row-flex', style: { marginTop: '8px' } },
+          h('label', { class: 'btn btn-sm' }, icon('camera'), '拍照辨識文字', ocrInput), ocrInfo),
         h('div', { class: 'btn-row' },
           h('button', { class: 'btn', onclick: () => close() }, '取消'),
           h('button', { class: 'btn btn-primary', onclick: apply }, '拆解'),
@@ -265,16 +316,6 @@ export async function render({ root, params, query }) {
 }
 
 // ------------------------------------------------------------ 解析貼上的題目
-
-const CJK = '㐀-䶿一-鿿豈-﫿';
-
-function cleanInline(s) {
-  return s
-    .replace(/\r\n?/g, '\n')
-    .replace(new RegExp(`(?<=[${CJK}])[ \\t\\u3000]+(?=[${CJK}])`, 'g'), '')
-    .replace(new RegExp(`(?<=[${CJK}0-9A-Za-z，、；「『（【])[ \\t]*\\n[ \\t]*(?=[${CJK}A-Za-z，、；」』）】])`, 'g'), '')
-    .trim();
-}
 
 const toHalf = (c) => (/[Ａ-Ｈａ-ｈ１-８]/.test(c) ? String.fromCharCode(c.charCodeAt(0) - 0xfee0) : c);
 

@@ -8,5 +8,5 @@ window.FC_CONFIG = {
   registrationUrl: 'https://script.google.com/macros/s/AKfycbwU8uQOwb3x8S4VbLGgQDl0r-PVPyXvuyAohEziDr3DhX-BIkgSJMYG2n7pko5IsDdT1g/exec',
   // true：第一次使用必須用 Google 帳號註冊（只在 https 正式網址生效；本機測試時可略過）
   requireGoogleSignIn: true,
-  appVersion: '0.3.0',
+  appVersion: '0.4.0',
 };

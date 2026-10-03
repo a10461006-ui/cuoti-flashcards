@@ -1,0 +1,5 @@
+文字辨識（OCR）函式庫，全部在使用者的裝置上執行，照片不會上傳。
+- tesseract.js 7.0.0（Apache-2.0）：tesseract.esm.min.js、worker.min.js — https://github.com/naptha/tesseract.js
+- tesseract.js-core 7.0.0（Apache-2.0）：core/tesseract-core-simd-lstm.wasm.js（支援 SIMD 的裝置）、core/tesseract-core-lstm.wasm.js（舊裝置）
+- 辨識資料 @tesseract.js-data/chi_tra 1.0.0 的 4.0.0_best_int（tessdata，Apache-2.0）：lang/chi_tra.traineddata.gz（只用繁體中文模型：比中英混合快一倍，而且不會把中文行誤判成英文；括號內的英文仍可辨識）
+來源：cdn.jsdelivr.net（已比對 jsDelivr 公布的 SHA-256）

@@ -422,6 +422,30 @@ details.fold > .body { padding: 2px 16px 4px; }
 .q-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 13px; color: var(--text-3); }
 .q-stem { margin: 10px 0 18px; font-size: var(--fs-read); line-height: 1.85; letter-spacing: .01em; }
 .opts { display: flex; flex-direction: column; gap: 10px; }
+
+/* 題目附圖：圖片本身保持白底（試題圖多半是白底黑字），點一下全螢幕 */
+.q-figs { display: grid; gap: 10px; margin: -6px 0 18px; }
+.q-fig {
+  display: block; width: 100%; padding: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  background: #fff; cursor: zoom-in;
+}
+.q-fig img { display: block; width: 100%; height: auto; max-height: 62vh; object-fit: contain; }
+.q-figs.sm { margin: 4px 0 10px; }
+.q-figs.sm .q-fig img { max-height: 240px; }
+.img-viewer { position: fixed; inset: 0; z-index: 250; display: flex; flex-direction: column; background: rgba(8, 9, 11, .94); }
+.img-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; -webkit-overflow-scrolling: touch; }
+.img-scroll img { max-width: 100%; max-height: 100%; background: #fff; border-radius: 6px; }
+.img-viewer.zoomed .img-scroll { align-items: flex-start; justify-content: flex-start; }
+.img-viewer.zoomed .img-scroll img { max-width: none; max-height: none; width: 200%; }
+.img-tools { display: flex; justify-content: center; gap: 10px; padding: 12px 16px calc(12px + var(--safe-b, 0px)); }
+.img-edit .img-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.img-thumb { position: relative; aspect-ratio: 1; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
+.img-thumb .img-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.img-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.img-thumb .img-del { position: absolute; top: 4px; right: 4px; width: 30px; height: 30px; min-height: 0; border-radius: 15px; background: rgba(20, 20, 22, .72); color: #fff; }
+.img-thumb .img-del svg { width: 16px; height: 16px; }
+.img-add { justify-content: flex-start; }
+.img-add .btn { flex: 0 0 auto; }
 .opt {
   display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 14px; text-align: left;
   border: 1.5px solid var(--border); border-radius: 14px; background: var(--surface);
@@ -598,6 +622,11 @@ button.opt:active { background: var(--surface-2); transform: scale(.995); }
   background: var(--primary); color: var(--primary-ink); font-weight: 750; font-size: 14px;
 }
 .upload-info:not(:empty) { margin-bottom: 10px; }
+.pickers { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 10px; }
+.ocr-box { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: var(--primary-soft); }
+.ocr-box .progress { flex: none; }
+.pv-img { flex: none; display: inline-flex; color: var(--primary-text); }
+.pv-img svg { width: 18px; height: 18px; }
 .textarea.mono { font-size: 14px; line-height: 1.6; min-height: 120px; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .two-col .field { margin-bottom: 18px; }

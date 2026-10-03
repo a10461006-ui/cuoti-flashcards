@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { goBack, navigate } from '../app.js';
 import { invalidateSubjects } from '../store.js';
-import { clear, confirmDialog, formatDue, h, icon, iconButton, rich, showError, toast, topbar } from '../ui.js';
+import { clear, confirmDialog, figureList, formatDue, h, icon, iconButton, rich, showError, toast, topbar } from '../ui.js';
 import { startPractice } from './practice.js';
 
 export async function render({ root, params }) {
@@ -41,6 +41,7 @@ export async function render({ root, params }) {
       q.paperId ? h('a', { class: 'paper-link', href: `#/paper/${q.paperId}` },
         icon('file'), `${q.paperTitle} · 第 ${q.number} 題`, icon('chevron')) : null,
       rich(q.stem || '（沒有題幹）', 'q-stem'),
+      figureList(q.images),
       h('div', { class: 'opts' }, q.options.map((o) => optionView(o, q, confirming))),
       note('keypoint', '本題考點', q.keypoint),
       note('mistake', '我誤會的地方', q.mistake),

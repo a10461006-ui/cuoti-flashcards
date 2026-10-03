@@ -8,6 +8,9 @@ import { GRADES, MASTERED_DAYS, newCard, schedule } from './srs.js';
 import { cleanNote, contentHash, nowIso } from './textutil.js';
 
 const MAX_OPTIONS = 8;
+const MAX_IMAGES = 6;
+const MAX_IMAGE_CHARS = 4_000_000; // 單張圖片（data URL）上限約 3 MB
+const IMAGE_SRC = /^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/;
 const DEFAULT_PROFILE = {
   key: 'profile', nickname: '', exam: '', newPerDay: 20, shuffleOptions: true,
   storage: 'device', setupDone: false, google: null, createdAt: null,
@@ -77,7 +80,7 @@ function questionOut(q) {
   const paper = q.paperId ? mem.papers.get(q.paperId) : null;
   return {
     id: q.id, subjectId: q.subjectId, subject: mem.subjects.get(q.subjectId)?.name ?? '',
-    source: q.source, stem: q.stem, options: q.options, answer: q.answer,
+    source: q.source, stem: q.stem, options: q.options, answer: q.answer, images: q.images || [],
     keypoint: q.keypoint, mistake: q.mistake, concept: q.concept, note: q.note, tags: q.tags || [],
     status: q.status, statusNote: q.statusNote, starred: Boolean(q.starred),
     createdAt: q.createdAt, updatedAt: q.updatedAt,
@@ -93,7 +96,7 @@ function getQuestion(id) {
 function newQuestionRecord(subjectId, q, origin = 'manual', paperId = null, number = null) {
   const now = nowIso();
   return {
-    subjectId, source: q.source || '', stem: q.stem || '', options: q.options || [], answer: q.answer || '',
+    subjectId, source: q.source || '', stem: q.stem || '', options: q.options || [], answer: q.answer || '', images: q.images || [],
     keypoint: q.keypoint || '', mistake: q.mistake || '', concept: q.concept || '', note: q.note || '',
     tags: q.tags || [], status: q.status, statusNote: q.statusNote || '', starred: false,
     contentHash: q.contentHash, origin, createdAt: now, updatedAt: now, paperId, number,
@@ -200,6 +203,19 @@ route('DELETE', '/api/subjects/(\\d+)', async ({ params: [id] }) => {
 
 // ---------------------------------------------------------------- 題目
 
+/** 題目附圖：只接受 JPEG／PNG／WebP／GIF 的 data URL（不接受 SVG），最多 6 張 */
+function normalizeImages(list) {
+  if (!Array.isArray(list)) return [];
+  if (list.length > MAX_IMAGES) fail(400, `每題最多 ${MAX_IMAGES} 張圖片`);
+  return list.map((img) => {
+    const src = String(img?.src || '');
+    if (src.length > MAX_IMAGE_CHARS) fail(400, '圖片太大，請換一張較小的圖片');
+    if (!IMAGE_SRC.test(src)) fail(400, '圖片格式不正確，請用 JPG 或 PNG');
+    const dim = (v) => Math.max(0, Math.min(20000, Math.round(Number(v) || 0)));
+    return { src, w: dim(img.w), h: dim(img.h) };
+  });
+}
+
 function normalizeQuestion(body) {
   const stem = str(body.stem, 20000).trim();
   const options = [];
@@ -228,6 +244,8 @@ function normalizeQuestion(body) {
     keypoint: cleanNote(str(body.keypoint, 10000)), mistake: cleanNote(str(body.mistake, 10000)),
     concept: cleanNote(str(body.concept, 10000)), note: cleanNote(str(body.note, 10000)),
     tags, status, statusNote, contentHash: contentHash(stem, options.map((o) => o.text)),
+    // 沒有帶 images 欄位（舊版畫面）就不動原本的圖片
+    ...(Array.isArray(body.images) ? { images: normalizeImages(body.images) } : {}),
   };
 }
 
@@ -581,7 +599,8 @@ route('POST', '/api/papers/extract', async ({ body, query }) => {
 
 function parsePaper(body) {
   if (!String(body.questionsText || '').trim()) fail(400, '請先上傳或貼上試題');
-  const parsed = buildPaper(String(body.questionsText), String(body.answersText || ''), String(body.filename || ''));
+  const figures = Array.isArray(body.figures) ? body.figures.filter((f) => IMAGE_SRC.test(String(f?.src || '')) && String(f.src).length <= MAX_IMAGE_CHARS) : [];
+  const parsed = buildPaper(String(body.questionsText), String(body.answersText || ''), String(body.filename || ''), figures);
   const existing = new Map();
   for (const q of all('questions').sort((a, b) => (a.paperId ? 1 : 0) - (b.paperId ? 1 : 0))) {
     if (!existing.has(q.contentHash)) existing.set(q.contentHash, q); // 優先對應訂正本的題目
@@ -624,6 +643,7 @@ route('POST', '/api/papers', async ({ body }) => {
       const old = mem.questions.get(q.existingId);
       const update = { ...old, paperId, number: q.number };
       if (q.status === 'ok' && old.status === 'review') Object.assign(update, { answer: q.answer, status: 'ok', statusNote: '', updatedAt: nowIso() });
+      if (!old.images?.length && q.images.length) update.images = q.images.slice(0, MAX_IMAGES);
       ops.push({ op: 'put', store: 'questions', value: update });
       linked += 1;
       continue;
@@ -632,6 +652,7 @@ route('POST', '/api/papers', async ({ body }) => {
       source: `${title} 第 ${q.number} 題`, stem: q.stem,
       options: q.options.map((o) => ({ key: o.key, text: o.text, mark: '', mistake: '', concept: '', note: '' })),
       answer: q.answer, concept: q.concept || '', status: q.status, statusNote: q.statusNote, contentHash: q.hash,
+      images: q.images.slice(0, MAX_IMAGES),
     }, `paper:${paperId}`, paperId, q.number) });
     inserted += 1;
   }

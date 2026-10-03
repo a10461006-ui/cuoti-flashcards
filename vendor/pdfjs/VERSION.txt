@@ -1,2 +1,3 @@
 pdf.js 6.3.289 (legacy build) — https://github.com/mozilla/pdf.js — Apache License 2.0
 檔名由 pdf.min.mjs / pdf.worker.min.mjs 改為 .js（內容未修改），讓任何網站主機都以 JavaScript 類型提供。
+wasm/：圖片解碼器（pdfjs-dist@6.3.289/wasm）— openjpeg（JPEG 2000，BSD-2）、jbig2（PDFium，BSD）、qcms（色彩管理，MIT），授權檔在同一個資料夾。

@@ -2,7 +2,7 @@
 import { api, newClientId, submitAnswer } from '../api.js';
 import { navigate } from '../app.js';
 import { prefs, userSettings } from '../store.js';
-import { clear, confirmDialog, h, icon, iconButton, pct, rich, showError, toast } from '../ui.js';
+import { clear, confirmDialog, figureList, h, icon, iconButton, pct, rich, showError, toast } from '../ui.js';
 
 const FONT_STEPS = [1, 1.15, 1.3, 0.9];
 const REQUEUE_GAP = 4;
@@ -222,7 +222,7 @@ function showQuestion(els) {
   const opts = h('div', { class: 'opts', role: 'group', 'aria-label': '選項' });
   const resultHost = h('div');
   const explainHost = h('div', { class: 'explain' });
-  clear(main, meta, rich(q.stem, 'q-stem'), opts, resultHost, explainHost);
+  clear(main, meta, rich(q.stem, 'q-stem'), figureList(q.images), opts, resultHost, explainHost);
   main.classList.toggle('answered', Boolean(session.answered));
 
   if (session.answered) {
