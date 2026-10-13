@@ -11,11 +11,16 @@ const LETTERS = 'ABCDEFGH';
 const ANSWER_POS_KEY = 'fc.answerPos';
 
 // 選項內容引用其他選項代號（例如「(A)(B)均正確」「A與B」）時，重新編號會改變意思 → 整題不洗牌
-const LOCK_RE = /[（(]\s*[A-H]\s*[)）]|選項\s*[A-H]|(?<![A-Za-z])[A-H]\s*(?:、|與|和|及|或|,|，)\s*[A-H](?![A-Za-z])|(?<![A-Za-z])[A-H]{2,4}(?![A-Za-z])\s*(?:均|皆|都|兩|三)|\b[A-H]\s+(?:and|or)\s+[A-H]\b/;
+// 注意：不能用 lookbehind「(?<!…)」，Safari 16.4 以前看不懂，整個 App 會打不開；改用 (?:^|[^A-Za-z])（只用來 test，多吃一個字沒關係）
+const LOCK_RE = /[（(]\s*[A-H]\s*[)）]|選項\s*[A-H]|(?:^|[^A-Za-z])[A-H]\s*(?:、|與|和|及|或|,|，)\s*[A-H](?![A-Za-z])|(?:^|[^A-Za-z])[A-H]{2,4}(?![A-Za-z])\s*(?:均|皆|都|兩|三)|\b[A-H]\s+(?:and|or)\s+[A-H]\b/;
 // 「以上皆是」這類跟位置有關的選項 → 固定在原位置，其他選項照常洗牌
 const ANCHOR_RE = /以上|上述|前述|皆是|皆非|皆正確|皆錯誤|均非|all of the|none of the|above/i;
 
 let session = null;
+
+/** 答案統一成「排序後的字母」：單選 'C'、多選 'ACD'（多選題要全部選對才算對） */
+const sortLetters = (s) => [...new Set(String(s || '').toUpperCase().replace(/[^A-H]/g, ''))].sort().join('');
+const keySet = (s) => new Set(sortLetters(s));
 
 export async function startPractice(config) {
   const data = await api.post('/api/practice/start', {
@@ -45,6 +50,7 @@ export async function startPractice(config) {
     requeue: config.mode !== 'paper', // 整份考古題依序作答時不插入重考，錯題在結算頁再練
     finished: false,
     refreshId: null,
+    picks: null, // 多選題目前勾選的選項（原本的代號）
   };
   navigate('#/practice');
   return true;
@@ -106,6 +112,11 @@ function labelOf(item, origKey) {
   return arrange(item).find((o) => o.orig === origKey)?.label ?? origKey;
 }
 
+/** 答案在這次畫面上的代號，例如多選題「A、C、D」 */
+function answerLabels(item) {
+  return [...sortLetters(item.q.answer)].map((k) => labelOf(item, k)).sort().join('、');
+}
+
 export async function render({ root }) {
   if (!session) {
     navigate('#/', { replace: true });
@@ -143,11 +154,16 @@ export async function render({ root }) {
     if (!current) return;
     if (e.key === 'Escape') { exit(main, header, bar); return; }
     if (!session.answered) {
+      const els = { main, header, bar };
       const view = arrange(session.queue[session.pos]);
       let opt = null;
       if (/^[1-8]$/.test(e.key)) opt = view[Number(e.key) - 1];
       else if (/^[a-h]$/i.test(e.key)) opt = view.find((o) => o.label === e.key.toUpperCase());
-      if (opt) { e.preventDefault(); choose(opt.orig, { main, header, bar }); }
+      if (current.multi) {
+        // 多選題：字母鍵勾選／取消，Enter 確認
+        if (opt) { e.preventDefault(); togglePick(opt.orig, els); }
+        else if (e.key === 'Enter' && session.picks?.size) { e.preventDefault(); choose([...session.picks].join(''), els); }
+      } else if (opt) { e.preventDefault(); choose(opt.orig, els); }
     } else if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowRight') {
       e.preventDefault();
       next('good', { main, header, bar });
@@ -222,11 +238,25 @@ function showQuestion(els) {
   const opts = h('div', { class: 'opts', role: 'group', 'aria-label': '選項' });
   const resultHost = h('div');
   const explainHost = h('div', { class: 'explain' });
-  clear(main, meta, rich(q.stem, 'q-stem'), figureList(q.images), opts, resultHost, explainHost);
+  const multiHint = q.multi && !session.answered
+    ? h('div', { class: 'multi-hint' }, icon('check'), '多選題：選出所有正確的選項，再按「確認作答」') : null;
+  clear(main, meta, rich(q.stem, 'q-stem'), figureList(q.images), multiHint, opts, resultHost, explainHost);
   main.classList.toggle('answered', Boolean(session.answered));
 
   if (session.answered) {
     drawAnswered(item, opts, resultHost, explainHost);
+  } else if (q.multi) {
+    const picks = session.picks || (session.picks = new Set());
+    for (const o of arrange(item)) {
+      const on = picks.has(o.orig);
+      opts.append(h('button', {
+        class: `opt multi ${on ? 'picked' : ''}`, 'aria-pressed': String(on), 'aria-label': `選項 ${o.label}：${o.text}`,
+        onclick: () => togglePick(o.orig, els),
+      },
+      h('span', { class: 'key' }, on ? icon('check') : o.label),
+      h('span', { class: 'body' }, h('span', { class: 'txt' }, o.text)),
+      ));
+    }
   } else {
     for (const o of arrange(item)) {
       opts.append(h('button', { class: 'opt', onclick: () => choose(o.orig, els), 'aria-label': `選項 ${o.label}：${o.text}` },
@@ -238,12 +268,24 @@ function showQuestion(els) {
   drawBar(bar, els);
 }
 
-/** origKey：原本的選項代號（送到伺服器判斷對錯）；畫面上顯示的是洗牌後的代號 */
-function choose(origKey, els) {
+function togglePick(origKey, els) {
+  if (session.answered) return;
+  const picks = session.picks || (session.picks = new Set());
+  if (picks.has(origKey)) picks.delete(origKey);
+  else picks.add(origKey);
+  const y = window.scrollY;
+  showQuestion(els);
+  window.scrollTo(0, y);
+}
+
+/** chosen：原本的選項代號（單選一個字母、多選好幾個；送到伺服器判斷對錯）；畫面上顯示的是洗牌後的代號 */
+function choose(chosen, els) {
   if (session.answered) return;
   const q = session.queue[session.pos].q;
-  const correct = origKey === q.answer;
-  session.answered = { chosen: origKey, correct, ms: Date.now() - session.qStartedAt, clientId: newClientId() };
+  const picked = sortLetters(chosen);
+  const correct = Boolean(picked) && picked === sortLetters(q.answer);
+  session.answered = { chosen: picked, correct, ms: Date.now() - session.qStartedAt, clientId: newClientId() };
+  session.picks = null;
   if (!session.seen.has(q.id)) session.seen.set(q.id, { q, firstCorrect: correct });
   if (!correct) navigator.vibrate?.(35);
   showQuestion(els);
@@ -252,14 +294,19 @@ function choose(origKey, els) {
 function drawAnswered(item, opts, resultHost, explainHost) {
   const q = item.q;
   const { chosen, correct } = session.answered;
-  const answerLabel = labelOf(item, q.answer);
+  const answerLabel = answerLabels(item);
+  const answers = keySet(q.answer);
+  const picked = keySet(chosen);
   for (const o of arrange(item)) {
-    const isAnswer = o.orig === q.answer;
-    const isWrong = o.orig === chosen && !correct;
-    const cls = ['opt', isAnswer && 'is-answer', isWrong && 'is-wrong', !isAnswer && !isWrong && 'is-dim'].filter(Boolean).join(' ');
+    const isAnswer = answers.has(o.orig);
+    const isWrong = picked.has(o.orig) && !isAnswer;
+    const missed = q.multi && isAnswer && chosen && !picked.has(o.orig);
+    const cls = ['opt', isAnswer && 'is-answer', missed && 'is-missed', isWrong && 'is-wrong', !isAnswer && !isWrong && 'is-dim'].filter(Boolean).join(' ');
+    const tag = !q.multi || !chosen ? '' : isWrong ? '選錯' : missed ? '漏選' : isAnswer ? '選對' : '';
     opts.append(h('div', { class: cls },
       h('span', { class: 'key' }, isAnswer ? icon('check') : isWrong ? icon('x') : o.label),
       h('div', { class: 'body' },
+        tag ? h('span', { class: `pick-tag ${isWrong ? 'bad' : missed ? 'warn' : 'ok'}` }, tag) : null,
         h('div', { class: 'txt' }, isAnswer || isWrong ? `${o.label}. ${o.text}` : o.text),
         o.orig !== o.label ? h('div', { class: 'orig' }, `原選項 ${o.orig}`) : null,
         o.mark ? h('div', { class: 'mark' }, `敘述判斷：${o.mark}`) : null,
@@ -291,7 +338,15 @@ function drawBar(bar, els) {
   const isLast = session.pos >= session.queue.length - 1;
   const a = session.answered;
   let buttons;
-  if (!a) {
+  const current = session.queue[session.pos].q;
+  if (!a && current.multi) {
+    const n = session.picks?.size || 0;
+    buttons = [
+      h('button', { class: 'btn', onclick: () => choose('', els) }, '不會，看答案'),
+      h('button', { class: 'btn btn-primary', disabled: !n, onclick: () => choose([...session.picks].join(''), els) },
+        n ? `確認作答（${n}）` : '確認作答'),
+    ];
+  } else if (!a) {
     buttons = [h('button', { class: 'btn', onclick: () => choose('', els) }, '不會，看答案')];
   } else if (a.correct) {
     buttons = [
@@ -302,7 +357,7 @@ function drawBar(bar, els) {
     buttons = [h('button', { class: 'btn btn-primary', onclick: () => next('again', els) }, isLast ? '看結果' : '下一題', icon('arrow'))];
   }
   const item = session.queue[session.pos];
-  const answerLabel = labelOf(item, item.q.answer);
+  const answerLabel = answerLabels(item);
   clear(bar,
     a ? h('div', { class: `bar-status ${a.correct ? 'ok' : 'bad'}`, role: 'status' },
       icon(a.correct ? 'check' : 'x'),
@@ -310,7 +365,7 @@ function drawBar(bar, els) {
       h('span', { class: 'hint' }, '詳解在下方'),
     ) : null,
     h('div', { class: 'inner' }, buttons),
-    h('div', { class: 'kbd-hint' }, a ? 'Enter 下一題 · G 猜對的' : '按 A–E 或 1–5 作答 · Esc 結束'),
+    h('div', { class: 'kbd-hint' }, a ? 'Enter 下一題 · G 猜對的' : current.multi ? '按 A–E 勾選 · Enter 確認 · Esc 結束' : '按 A–E 或 1–5 作答 · Esc 結束'),
   );
 }
 
@@ -337,6 +392,7 @@ function next(grade, els) {
     if (insertAt - session.pos - 1 >= 2) session.queue.splice(insertAt, 0, { q: item.q, retry: item.retry + 1 });
   }
   session.answered = null;
+  session.picks = null;
   session.pos += 1;
   window.scrollTo({ top: 0 });
   if (session.pos >= session.queue.length) {
@@ -417,7 +473,7 @@ function showSummary({ main, header, bar }) {
       h('div', { class: 'meta' }, h('span', null, q.subject), q.source ? h('span', null, `· ${q.source}`) : null),
       h('div', { class: 'stem' }, q.stem),
       // 選項每次都重新洗牌，所以這裡顯示答案內容而不是代號
-      h('div', { class: 'foot' }, h('span', { class: 'c' }, `正解：${(q.options.find((o) => o.key === q.answer)?.text || '').slice(0, 40)}`)),
+      h('div', { class: 'foot' }, h('span', { class: 'c' }, `正解：${q.options.filter((o) => keySet(q.answer).has(o.key)).map((o) => o.text.slice(0, q.multi ? 18 : 40)).join('；')}`)),
     ))) : null,
   );
   clear(bar, h('div', { class: 'inner' },

@@ -8,6 +8,7 @@ export async function render({ root, params }) {
   const id = Number(params[0]);
   let q = await api.get(`/api/questions/${id}`);
   let nextReview = null; // 確認答案後，提示下一題待確認
+  let picks = null; // 多選題確認答案時勾選的選項
   const main = h('main', { class: 'page' });
   const header = h('div');
   clear(root, header, main);
@@ -42,7 +43,13 @@ export async function render({ root, params }) {
         icon('file'), `${q.paperTitle} · 第 ${q.number} 題`, icon('chevron')) : null,
       rich(q.stem || '（沒有題幹）', 'q-stem'),
       figureList(q.images),
+      q.multi ? h('div', { class: 'multi-hint' }, icon('check'),
+        confirming ? '多選題：勾選所有正確的選項，再按「確認答案」' : `多選題，正確答案：${[...(q.answer || '')].join('、') || '尚未設定'}`) : null,
       h('div', { class: 'opts' }, q.options.map((o) => optionView(o, q, confirming))),
+      confirming && q.multi ? h('button', {
+        class: 'btn btn-primary btn-block', style: { marginTop: '12px' }, disabled: !(picks || answerSet(q)).size,
+        onclick: () => confirmAnswer([...(picks || answerSet(q))].sort().join('')),
+      }, `確認答案：${[...(picks || answerSet(q))].sort().join('、') || '請先勾選'}`) : null,
       note('keypoint', '本題考點', q.keypoint),
       note('mistake', '我誤會的地方', q.mistake),
       note('concept', '正確觀念', q.concept),
@@ -67,8 +74,25 @@ export async function render({ root, params }) {
     );
   };
 
+  function answerSet(question) {
+    return new Set(String(question.answer || ''));
+  }
+
   function optionView(o, question, confirming) {
-    const isAnswer = o.key === question.answer;
+    const isAnswer = answerSet(question).has(o.key);
+    if (confirming && question.multi) {
+      // 多選題確認答案：點選項勾選／取消，按下方按鈕確認（預設勾好系統建議的答案）
+      const set = picks || answerSet(question);
+      const on = set.has(o.key);
+      return h('button', {
+        class: `opt multi ${on ? 'picked' : ''}`, 'aria-pressed': String(on), 'aria-label': `勾選 ${o.key}`,
+        onclick: () => {
+          picks = new Set(set);
+          if (on) picks.delete(o.key); else picks.add(o.key);
+          draw();
+        },
+      }, h('span', { class: 'key' }, on ? icon('check') : o.key), h('div', { class: 'body' }, h('div', { class: 'txt' }, o.text)));
+    }
     const suggested = confirming && isAnswer;
     const cls = ['opt', !confirming && isAnswer && 'is-answer', suggested && 'is-suggest'].filter(Boolean).join(' ');
     const body = h('div', { class: 'body' },
@@ -85,10 +109,12 @@ export async function render({ root, params }) {
   }
 
   async function confirmAnswer(key) {
-    const ok = await confirmDialog({ title: `正確答案是 ${key}？`, message: '確認後這題就會出現在練習中。', ok: `設為 ${key}` });
+    const shown = [...key].join('、');
+    const ok = await confirmDialog({ title: `正確答案是 ${shown}？`, message: '確認後這題就會出現在練習中。', ok: `設為 ${shown}` });
     if (!ok) return;
     try {
       q = await api.patch(`/api/questions/${q.id}`, { answer: key });
+      picks = null;
       invalidateSubjects();
       toast(q.status === 'ok' ? '已確認答案，可以開始練習了' : '已設定答案', 'ok');
       const rest = await api.get('/api/questions?status=review&sort=oldest&limit=1');

@@ -1,0 +1,2 @@
+pdf.js 3.11.174（legacy build）— https://github.com/mozilla/pdf.js — Apache License 2.0
+備用：給 Safari 16.3 以前等舊瀏覽器用（新版 6.3 用到舊瀏覽器看不懂的語法）。字型對照表共用 ../pdfjs/cmaps/。

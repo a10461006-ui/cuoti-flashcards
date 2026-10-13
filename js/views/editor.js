@@ -4,7 +4,7 @@ import { goBack, navigate } from '../app.js';
 import { invalidateSubjects, loadSubjects } from '../store.js';
 import { cleanInline } from '../local/textutil.js';
 import {
-  autoGrow, clear, confirmDialog, h, icon, iconButton, imageToDataUrl, openImage, openSheet, promptDialog, segmented, showError, toast, topbar,
+  autoGrow, clear, confirmDialog, h, icon, iconButton, imageToDataUrl, openImage, openSheet, promptDialog, segmented, showError, switchInput, toast, topbar,
 } from '../ui.js';
 
 const LETTERS = 'ABCDEFGH';
@@ -12,6 +12,8 @@ const MAX_OPTIONS = 8;
 const MARK_POS = '✅正確';
 const MARK_NEG = '❌錯誤';
 const MAX_IMAGES = 6;
+/** 答案統一成排序後的字母：單選 'C'、多選 'ACD' */
+const sortLetters = (s) => [...new Set(String(s || '').toUpperCase().replace(/[^A-H]/g, ''))].sort().join('');
 
 export async function render({ root, params, query }) {
   const editId = params[0] ? Number(params[0]) : null;
@@ -23,11 +25,11 @@ export async function render({ root, params, query }) {
   const lastSubject = Number(localStorage.getItem('fc.lastSubject')) || null;
   const blank = () => ({
     subjectId: query.subject ? Number(query.subject) : (subjects.some((s) => s.id === lastSubject) ? lastSubject : subjects[0]?.id ?? null),
-    source: '', stem: '', answer: '', keypoint: '', mistake: '', concept: '', note: '', tags: [], images: [],
+    source: '', stem: '', answer: '', multi: false, keypoint: '', mistake: '', concept: '', note: '', tags: [], images: [],
     options: ['A', 'B', 'C', 'D'].map((key) => ({ key, text: '', mark: '', mistake: '', concept: '', note: '' })),
   });
   const form = existing ? {
-    subjectId: existing.subjectId, source: existing.source, stem: existing.stem, answer: existing.answer,
+    subjectId: existing.subjectId, source: existing.source, stem: existing.stem, answer: existing.answer, multi: Boolean(existing.multi),
     keypoint: existing.keypoint, mistake: existing.mistake, concept: existing.concept, note: existing.note,
     tags: [...existing.tags], options: existing.options.map((o) => ({ ...o })), images: [...(existing.images || [])],
   } : blank();
@@ -116,12 +118,18 @@ export async function render({ root, params, query }) {
     clear(optionsHost, form.options.map((o, i) => {
       const ta = autoGrow(h('textarea', { class: 'textarea', value: o.text, rows: 1, placeholder: `選項 ${LETTERS[i]}`, 'aria-label': `選項 ${LETTERS[i]}` }));
       ta.addEventListener('input', () => { o.text = ta.value; touch(); });
-      const isAns = form.answer === o.key;
+      const isAns = form.answer.includes(o.key);
       return h('div', { class: 'opt-edit' },
         h('button', {
-          type: 'button', class: `pick ${isAns ? 'on' : ''}`, 'aria-pressed': String(isAns),
-          'aria-label': `設定 ${LETTERS[i]} 為正確答案`, title: '點一下設為正確答案',
-          onclick: () => { form.answer = o.key; touch(); drawOptions(); },
+          type: 'button', class: `pick ${form.multi ? 'multi' : ''} ${isAns ? 'on' : ''}`, 'aria-pressed': String(isAns),
+          'aria-label': form.multi ? `勾選 ${LETTERS[i]} 為正確答案之一` : `設定 ${LETTERS[i]} 為正確答案`,
+          title: form.multi ? '點一下勾選／取消（多選題可以有好幾個答案）' : '點一下設為正確答案',
+          onclick: () => {
+            if (form.multi) form.answer = sortLetters(isAns ? form.answer.replace(o.key, '') : form.answer + o.key);
+            else form.answer = o.key;
+            touch();
+            drawOptions();
+          },
         }, isAns ? icon('check') : LETTERS[i]),
         ta,
         form.options.length > 2 ? iconButton('x', `刪除選項 ${LETTERS[i]}`, () => {
@@ -140,16 +148,25 @@ export async function render({ root, params, query }) {
       },
     }, icon('plus'), '新增選項') : null);
     answerHint.className = `answer-hint ${form.answer ? '' : 'need'}`;
-    answerHint.textContent = form.answer ? `正確答案：${form.answer}（點左側圓圈可更改）` : '點選項左側的圓圈，設定正確答案';
+    answerHint.textContent = form.multi
+      ? (form.answer ? `正確答案：${[...form.answer].join('、')}（點左側方框增減）` : '多選題：點選項左側的方框，勾選所有正確答案')
+      : (form.answer ? `正確答案：${form.answer}（點左側圓圈可更改）` : '點選項左側的圓圈，設定正確答案');
     drawOptionNotes();
   };
 
   // 刪除選項後重新編號，答案跟著選項走
   const relabel = () => {
-    const answerOpt = form.options.find((o) => o.key === form.answer);
+    const answerOpts = form.options.filter((o) => form.answer.includes(o.key));
     form.options.forEach((o, i) => { o.key = LETTERS[i]; });
-    form.answer = answerOpt ? answerOpt.key : '';
+    form.answer = sortLetters(answerOpts.map((o) => o.key).join(''));
   };
+  // 多選題開關：關掉時只保留第一個答案
+  const multiSwitch = switchInput(form.multi, (on) => {
+    form.multi = on;
+    if (!on) form.answer = form.answer.slice(0, 1);
+    touch();
+    drawOptions();
+  }, '多選題');
 
   const noteArea = (obj, field, label, placeholder = '') => {
     const ta = autoGrow(h('textarea', { class: 'textarea sm', value: obj[field] || '', placeholder, rows: 2 }));
@@ -178,7 +195,7 @@ export async function render({ root, params, query }) {
     if (!form.answer) { toast('請先設定正確答案'); return; }
     const neg = stemIsNegative(form.stem);
     for (const o of form.options) {
-      const isAns = o.key === form.answer;
+      const isAns = form.answer.includes(o.key);
       o.mark = (isAns !== neg) ? MARK_POS : MARK_NEG;
     }
     touch();
@@ -201,7 +218,10 @@ export async function render({ root, params, query }) {
       stem,
     ),
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, h('span', null, '題目附圖'), h('span', { class: 'hint' }, '選填，最多 6 張')), imagesHost),
-    h('div', { class: 'field' }, h('div', { class: 'lbl' }, '選項與答案'), answerHint, optionsHost),
+    h('div', { class: 'field' },
+      h('div', { class: 'lbl' }, h('span', null, '選項與答案'),
+        h('span', { class: 'multi-switch' }, h('span', { class: 'hint' }, '多選題'), multiSwitch)),
+      answerHint, optionsHost),
     h('details', { class: 'fold', open: Boolean(hasNotes) || !editId },
       h('summary', null, '詳解與筆記', h('span', { class: 'hint' }, '選填')),
       h('div', { class: 'body' },
@@ -240,7 +260,10 @@ export async function render({ root, params, query }) {
         stem.dispatchEvent(new Event('input'));
         if (parsed.options.length) {
           form.options = parsed.options.map((o) => ({ key: o.key, text: o.text, mark: '', mistake: '', concept: '', note: '' }));
-          form.answer = parsed.answer && form.options.some((o) => o.key === parsed.answer) ? parsed.answer : '';
+          if (parsed.answer.length > 1) form.multi = true;
+          multiSwitch.querySelector('input').checked = form.multi;
+          form.answer = parsed.answer && [...parsed.answer].every((k) => form.options.some((o) => o.key === k))
+            ? (form.multi ? parsed.answer : parsed.answer.slice(0, 1)) : '';
         }
         if (parsed.source && !form.source) { form.source = parsed.source; source.value = parsed.source; }
         touch();
@@ -286,7 +309,7 @@ export async function render({ root, params, query }) {
     if (!form.subjectId) { toast('請先選擇或新增科目', 'bad'); subjectSelect.focus(); return; }
     if (!form.stem.trim()) { toast('請輸入題目內容', 'bad'); stem.focus(); return; }
     if (filled.length < 2) { toast('至少需要 2 個選項', 'bad'); return; }
-    if (!form.answer || !filled.some((o) => o.key === form.answer)) {
+    if (!form.answer || ![...form.answer].every((k) => filled.some((o) => o.key === k))) {
       const ok = await confirmDialog({ title: '還沒設定正確答案', message: '沒有答案的題目會先放在「需確認」，不會出現在練習中。仍要儲存嗎？', ok: '仍要儲存' });
       if (!ok) return;
     }
@@ -322,9 +345,10 @@ const toHalf = (c) => (/[Ａ-Ｈａ-ｈ１-８]/.test(c) ? String.fromCharCode(c
 export function parseQuestionText(raw) {
   let text = raw.replace(/\r\n?/g, '\n').trim();
   let answer = '';
-  const ans = text.match(/(?:答案|正解|解答|Ans(?:wer)?)\s*[:：]?\s*[(（]?\s*([A-Ha-hＡ-Ｈ])\s*[)）]?/);
+  // 「答案：C」；多選題「答案：ACD」「答案：A、C、D」
+  const ans = text.match(/(?:答案|正解|解答|Ans(?:wer)?)\s*[:：]?\s*[(（]?\s*([A-HＡ-Ｈ](?:\s*[、,，]?\s*[A-HＡ-Ｈ])*|[a-h])(?![A-Za-z])\s*[)）]?/);
   if (ans) {
-    answer = toHalf(ans[1]).toUpperCase();
+    answer = sortLetters([...ans[1]].map(toHalf).join(''));
     text = (text.slice(0, ans.index) + text.slice(ans.index + ans[0].length)).trim();
   }
 

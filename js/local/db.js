@@ -17,27 +17,69 @@ export const STORES = {
 export const mem = Object.fromEntries(Object.keys(STORES).map((name) => [name, new Map()]));
 let db = null;
 let opening = null;
+// 暫時模式：瀏覽器不讓網站存資料（無痕模式、封鎖所有 Cookie、舊版 Safari…）時，資料只放在記憶體，App 照樣能用
+let volatile = false;
+let volatileReason = '';
+export const storageStatus = () => ({ volatile, reason: volatileReason });
 
 const done = (request) => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
 });
 
+/** 開啟資料庫；Safari 偶爾第一次開啟會一直沒有回應，所以加上逾時，逾時後重試一次 */
+function openOnce(timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(new Error('開啟本機資料庫逾時'), { timeout: true })), timeoutMs);
+    let request;
+    try {
+      request = indexedDB.open(DB_NAME, VERSION);
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+      return;
+    }
+    request.onupgradeneeded = () => {
+      for (const [name, options] of Object.entries(STORES)) {
+        if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, options);
+      }
+    };
+    request.onsuccess = () => { clearTimeout(timer); resolve(request.result); };
+    request.onerror = () => { clearTimeout(timer); reject(request.error || new Error('無法開啟本機資料庫')); };
+    request.onblocked = () => { clearTimeout(timer); reject(new Error('請關閉其他開著這個 App 的分頁，再重新整理')); };
+  });
+}
+
 export function openDb() {
   if (!opening) {
     opening = (async () => {
-      if (!('indexedDB' in window)) throw new Error('這個瀏覽器不支援本機資料儲存，請改用 Chrome、Safari 或 Edge');
-      db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, VERSION);
-        request.onupgradeneeded = () => {
-          for (const [name, options] of Object.entries(STORES)) {
-            if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, options);
-          }
-        };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error || new Error('無法開啟本機資料庫'));
-        request.onblocked = () => reject(new Error('請關閉其他開著這個 App 的分頁，再重新整理'));
-      });
+      let idb = null;
+      try {
+        idb = typeof indexedDB !== 'undefined' && indexedDB ? indexedDB : null;
+      } catch {
+        idb = null; // Safari 封鎖 Cookie 時，連讀取 indexedDB 都會出錯
+      }
+      const startVolatile = (reason) => {
+        volatile = true;
+        volatileReason = reason;
+        for (const name of Object.keys(STORES)) mem[name] = new Map();
+      };
+      if (!idb || window.FC_FORCE_VOLATILE) {
+        startVolatile('unsupported');
+        return;
+      }
+      try {
+        try {
+          db = await openOnce(6000);
+        } catch (err) {
+          if (!err?.timeout) throw err;
+          db = await openOnce(8000);
+        }
+      } catch (err) {
+        if (/關閉其他/.test(err?.message || '')) throw err; // 其他分頁卡住：請使用者處理，不要默默改成暫時模式
+        startVolatile(err?.timeout ? 'timeout' : 'blocked');
+        return;
+      }
       db.onversionchange = () => { db.close(); location.reload(); };
       const tx = db.transaction(Object.keys(STORES), 'readonly');
       await Promise.all(Object.keys(STORES).map(async (name) => {
@@ -50,12 +92,34 @@ export function openDb() {
   return opening;
 }
 
+/** 暫時模式的寫入：直接改記憶體，自動編號接在目前最大的編號後面 */
+function writeVolatile(ops) {
+  const ids = [];
+  for (const o of ops) {
+    const map = mem[o.store];
+    const { keyPath, autoIncrement } = STORES[o.store];
+    if (o.op === 'delete') map.delete(o.key);
+    else if (o.op === 'clear') map.clear();
+    else {
+      const value = o.value;
+      if (value[keyPath] == null && autoIncrement) value[keyPath] = Math.max(0, ...map.keys()) + 1;
+      if (o.op === 'add') {
+        if (map.has(value[keyPath])) throw new Error('資料編號重複');
+        ids.push(value[keyPath]);
+      }
+      map.set(value[keyPath], value);
+    }
+  }
+  return Promise.resolve(ids);
+}
+
 /**
  * 在同一個交易中寫入多筆：ops = [{ op: 'put' | 'add' | 'delete' | 'clear', store, value?, key? }]
  * 交易成功後才更新記憶體；回傳每個 add 產生的編號（依順序）。
  */
 export function write(ops) {
   if (!ops.length) return Promise.resolve([]);
+  if (volatile) return writeVolatile(ops);
   const names = [...new Set(ops.map((o) => o.store))];
   return new Promise((resolve, reject) => {
     const tx = db.transaction(names, 'readwrite');
@@ -94,6 +158,8 @@ export function closeDb() {
   if (db) { db.onversionchange = null; db.close(); }
   db = null;
   opening = null;
+  volatile = false;
+  volatileReason = '';
 }
 
 /** 請瀏覽器把資料標成「持續保存」，降低空間不足時被自動清除的機會 */

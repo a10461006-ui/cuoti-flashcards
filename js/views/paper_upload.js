@@ -226,9 +226,12 @@ export async function render({ root }) {
           s.linked ? h('span', { class: 'badge muted' }, `與訂正本相同 ${s.linked}`) : null,
           s.alreadyUploaded ? h('span', { class: 'badge muted' }, `已上傳過 ${s.alreadyUploaded}`) : null,
           s.withImages ? h('span', { class: 'badge primary' }, `含圖片 ${s.withImages}`) : null,
+          s.multi ? h('span', { class: 'badge primary' }, `多選題 ${s.multi}`) : null,
         ),
         p.warnings.length ? h('div', { class: 'stack', style: { margin: '10px 0 14px' } },
           p.warnings.map((w) => h('div', { class: 'banner' }, icon('alert'), h('div', { class: 'd' }, w)))) : null,
+        s.answerSection ? h('p', { class: 'small muted', style: { margin: '0 0 12px' } },
+          `答案檔裡有好幾個科目，已自動取用「${s.answerSection}」的答案。`) : null,
         s.linked ? h('p', { class: 'small muted', style: { margin: '0 0 12px' } },
           `有 ${s.linked} 題和你的訂正本一模一樣，不會重複建立，而是直接連到這份考古題（保留你的筆記與練習紀錄）。`) : null,
         field('title', '考古題名稱', { maxlength: 80, placeholder: '例如：113年 司法官第一試 綜合法學（三）' }),
@@ -251,7 +254,8 @@ export async function render({ root }) {
     h('span', { class: `num ${q.status}` }, q.number),
     h('span', { class: 'pv-stem' }, q.stem || '（沒有題目內容）'),
     q.images?.length ? h('span', { class: 'pv-img', title: '這題有圖片' }, icon('image')) : null,
-    q.answer ? h('span', { class: 'badge ok' }, `答 ${q.answer}`) : h('span', { class: 'badge warn' }, '無答案'),
+    q.answer ? h('span', { class: 'badge ok' }, `${q.multi ? '多選 ' : '答 '}${q.answer}`)
+      : h('span', { class: 'badge warn' }, q.multi ? '多選・無答案' : '無答案'),
     );
     row.append(head);
     if (open) {
@@ -261,7 +265,7 @@ export async function render({ root }) {
         q.duplicate === 'paper' ? h('div', { class: 'small muted', style: { marginBottom: '8px' } }, '這題已在其他考古題中，會略過') : null,
         rich(q.stem, 'pv-full'),
         figureList(q.images, 'sm'),
-        h('div', { class: 'pv-opts' }, q.options.map((o) => h('div', { class: `pv-opt ${o.key === q.answer ? 'ans' : ''}` },
+        h('div', { class: 'pv-opts' }, q.options.map((o) => h('div', { class: `pv-opt ${(q.answer || '').includes(o.key) ? 'ans' : ''}` },
           h('b', null, `(${o.key})`), ' ', o.text))),
         q.concept ? h('div', { class: 'note concept' }, h('div', { class: 'lbl' }, '解析'), rich(q.concept)) : null,
       ));

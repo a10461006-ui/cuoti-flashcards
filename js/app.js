@@ -89,7 +89,15 @@ async function render() {
   if (!route.bare) renderTabbar(route.tab);
   clear(root, spinner());
 
-  const mod = await route.view();
+  let mod;
+  try {
+    mod = await route.view();
+  } catch (err) {
+    // 頁面程式載入失敗（多半是瀏覽器太舊、或暫存了舊版檔案）：說明原因，不要一直轉圈
+    console.error(err);
+    if (token === renderToken) clear(root, loadErrorPage(err));
+    return;
+  }
   if (token !== renderToken) return; // 期間又切換了頁面
   const container = h('div', { class: 'screen' });
   clear(root, container);
@@ -104,6 +112,37 @@ async function render() {
         h('button', { class: 'btn btn-primary', onclick: () => render() }, '重新整理'))));
     }
   }
+}
+
+/** 程式載入失敗時的說明頁（boot.js 也有同樣的「清除暫存並重新載入」） */
+function loadErrorPage(err) {
+  return h('div', { class: 'page' }, h('div', { class: 'empty' },
+    h('h3', null, '這個頁面無法載入'),
+    h('p', null, '可能是瀏覽器版本太舊，或暫存了舊版的檔案。可以先按「清除暫存並重新載入」（不會刪除你的題目）；還是不行的話，請更新手機或電腦的系統，或改用最新版的 Chrome、Edge、Firefox。'),
+    h('div', { class: 'btn-row', style: { justifyContent: 'center' } },
+      h('button', { class: 'btn btn-primary', onclick: () => (window.fcResetAndReload ? window.fcResetAndReload() : location.reload()) }, '清除暫存並重新載入'),
+      h('button', { class: 'btn', onclick: () => location.reload() }, '重新整理')),
+    h('p', { class: 'small muted', style: { marginTop: '14px', wordBreak: 'break-all' } }, `錯誤訊息：${err?.message || err}`)));
+}
+
+/** 暫時模式（瀏覽器不讓網站存資料）：每個頁面上方都提醒，避免使用者以為資料有存起來 */
+function volatileBanner() {
+  if (MODE !== 'local' || !state.user?.volatile || document.getElementById('volatile-banner')) return;
+  let dismissed = false;
+  try { dismissed = sessionStorage.getItem('fc.volatileSeen') === '1'; } catch { /* 忽略 */ }
+  const banner = h('div', { id: 'volatile-banner', class: 'volatile-banner', role: 'alert' },
+    icon('alert'),
+    h('div', { class: 'grow' },
+      h('b', null, '這個瀏覽器目前不能保存資料'),
+      h('div', { class: 'small' },
+        '關閉頁面後，題目和練習紀錄會消失。常見原因是無痕（私密）瀏覽，或 Safari 開了「封鎖所有 Cookie」。',
+        'iPhone／iPad：到「設定 → App → Safari」關閉「封鎖所有 Cookie」並離開私密瀏覽；Mac：Safari「設定 → 隱私權」取消「封鎖所有 Cookie」。也可以改用其他瀏覽器。')),
+    h('button', { class: 'icon-btn', 'aria-label': '先收起來', onclick: () => {
+      banner.classList.add('mini');
+      try { sessionStorage.setItem('fc.volatileSeen', '1'); } catch { /* 忽略 */ }
+    } }, icon('x')));
+  if (dismissed) banner.classList.add('mini');
+  document.body.prepend(banner);
 }
 
 onUnauthorized(() => {
@@ -126,6 +165,7 @@ async function boot() {
       clear(root, h('div', { class: 'page' }, h('div', { class: 'empty' },
         h('h3', null, '無法開啟本機資料'), h('p', null, err?.message || '請重新整理'),
         h('button', { class: 'btn btn-primary', onclick: () => location.reload() }, '重新整理'))));
+      window.__fcStarted = true;
       return;
     }
   }
@@ -134,6 +174,8 @@ async function boot() {
     render();
   });
   await render();
+  window.__fcStarted = true; // 告訴 boot.js：App 已經正常啟動
+  volatileBanner();
   if (MODE === 'server') {
     window.addEventListener('online', flushPending);
     if (state.user) flushPending();

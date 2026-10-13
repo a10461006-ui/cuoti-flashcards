@@ -1,11 +1,17 @@
-// 讀寫 zip（.xlsx／.docx 都是 zip）。解壓縮用瀏覽器內建的 DecompressionStream，不需要外部套件。
+// 讀寫 zip（.xlsx／.docx 都是 zip）。解壓縮優先用瀏覽器內建的 DecompressionStream；
+// 舊版瀏覽器（Safari 16.3 以前等）沒有的話，改用 inflate.js 的純 JavaScript 版本，任何瀏覽器都能讀。
 
-async function inflateRaw(data) {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new Error('這個瀏覽器版本太舊，無法讀取 Excel／Word 檔。請更新系統（iOS 16.4 以上），或改用電腦上傳。');
+async function inflateRaw(data, size) {
+  if (typeof DecompressionStream !== 'undefined' && !window.FC_FORCE_JS_INFLATE) {
+    try {
+      const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch {
+      // 有 DecompressionStream 但不支援 deflate-raw（較舊的 Chrome）→ 改用下面的版本
+    }
   }
-  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const { inflateRawSync } = await import('./inflate.js');
+  return inflateRawSync(data, size);
 }
 
 export async function unzip(buffer) {
@@ -24,11 +30,12 @@ export async function unzip(buffer) {
     if (view.getUint32(p, true) !== 0x02014b50) break;
     const method = view.getUint16(p + 10, true);
     const size = view.getUint32(p + 20, true);
+    const usize = view.getUint32(p + 24, true);
     const nameLen = view.getUint16(p + 28, true);
     const extraLen = view.getUint16(p + 30, true);
     const commentLen = view.getUint16(p + 32, true);
     const offset = view.getUint32(p + 42, true);
-    entries.set(decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen)), { method, size, offset });
+    entries.set(decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen)), { method, size, usize, offset });
     p += 46 + nameLen + extraLen + commentLen;
   }
 
@@ -38,7 +45,7 @@ export async function unzip(buffer) {
     const start = e.offset + 30 + view.getUint16(e.offset + 26, true) + view.getUint16(e.offset + 28, true);
     const data = bytes.subarray(start, start + e.size);
     if (e.method === 0) return data;
-    if (e.method === 8) return inflateRaw(data);
+    if (e.method === 8) return inflateRaw(data, e.usize);
     throw new Error('不支援的壓縮方式');
   }
 

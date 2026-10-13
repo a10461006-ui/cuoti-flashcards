@@ -57,17 +57,53 @@ async function zipText(buffer) {
   throw new Error('無法讀取這個檔案，請上傳 PDF、Word（.docx）或文字檔');
 }
 
+// PDF 函式庫：新版 pdf.js 6.3 需要 Safari 16.4 以上；舊瀏覽器載入失敗時，自動改用 pdf.js 3.11（Safari 14 以上可用）
+const PDFJS_BASE = new URL('../../vendor/pdfjs/', import.meta.url);
+const LEGACY_BASE = new URL('../../vendor/pdfjs-legacy/', import.meta.url);
 let pdfjsPromise = null;
+let legacyPromise = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('無法載入 PDF 程式，請確認網路連線'));
+    document.head.append(s);
+  });
+}
+
+function loadLegacyPdfjs() {
+  if (!legacyPromise) {
+    // 新版 pdf.js 也會設定 window.pdfjsLib，所以要確認版本是 3.x 才直接用
+    const loaded = () => /^3\./.test(String(window.pdfjsLib?.version || ''));
+    legacyPromise = (loaded() ? Promise.resolve() : loadScript(new URL('pdf.min.js', LEGACY_BASE).href)).then(() => {
+      if (!loaded()) throw new Error('無法載入 PDF 程式');
+      const lib = window.pdfjsLib;
+      lib.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', LEGACY_BASE).href;
+      return { lib, cmaps: new URL('cmaps/', PDFJS_BASE).href, wasm: null, legacy: true };
+    }).catch((err) => { legacyPromise = null; throw err; });
+  }
+  return legacyPromise;
+}
+
 function loadPdfjs() {
   if (!pdfjsPromise) {
-    const base = new URL('../../vendor/pdfjs/', import.meta.url);
     // 原檔名是 .mjs，改成 .js 是為了讓任何網站主機都用正確的檔案類型提供
-    pdfjsPromise = import(new URL('pdf.min.js', base).href).then((lib) => {
-      lib.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', base).href;
-      return { lib, cmaps: new URL('cmaps/', base).href, wasm: new URL('wasm/', base).href };
-    });
+    const modern = window.FC_FORCE_LEGACY_PDF ? Promise.reject(new Error('測試：使用舊版'))
+      : import(new URL('pdf.min.js', PDFJS_BASE).href).then((lib) => {
+        lib.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', PDFJS_BASE).href;
+        return { lib, cmaps: new URL('cmaps/', PDFJS_BASE).href, wasm: new URL('wasm/', PDFJS_BASE).href, legacy: false };
+      });
+    pdfjsPromise = modern.catch(() => loadLegacyPdfjs()).catch((err) => { pdfjsPromise = null; throw err; });
   }
   return pdfjsPromise;
+}
+
+/** 目前用的是哪個版本的 PDF 程式（測試與錯誤回報用） */
+export async function pdfEngine() {
+  const pdf = await loadPdfjs();
+  return pdf.legacy ? 'pdf.js 3.11（相容模式）' : 'pdf.js 6.3';
 }
 
 /**
@@ -216,15 +252,38 @@ function placeFigures(lines, boxes, firstId) {
 
 const MAX_FIGURES = 80;
 
-async function openPdf(buffer) {
-  const { lib, cmaps, wasm } = await loadPdfjs();
-  // wasmUrl：JPEG 2000、JBIG2 圖片的解碼器（考選部試題的照片常是 JPEG 2000）
-  const task = lib.getDocument({ data: new Uint8Array(buffer), cMapUrl: cmaps, cMapPacked: true, wasmUrl: wasm, isEvalSupported: false, disableFontFace: true });
+async function openWith(pdf, buffer) {
+  const { lib, cmaps, wasm } = pdf;
+  // wasmUrl：JPEG 2000、JBIG2 圖片的解碼器（考選部試題的照片常是 JPEG 2000）；pdf.js 3.11 內建，不需要
+  // data 每次給一份複本：pdf.js 可能把資料轉交給背景執行緒，原本的就不能再用
+  const task = lib.getDocument({ data: new Uint8Array(buffer.slice(0)), cMapUrl: cmaps, cMapPacked: true, wasmUrl: wasm || undefined, isEvalSupported: false, disableFontFace: true });
   try {
     return { lib, task, doc: await task.promise };
   } catch (err) {
     task.destroy?.();
-    if (err?.name === 'PasswordException') throw new Error('這個 PDF 有密碼保護，無法讀取');
+    if (err?.name === 'PasswordException') throw Object.assign(new Error('這個 PDF 有密碼保護，無法讀取'), { final: true });
+    if (err?.name === 'InvalidPDFException') throw Object.assign(new Error('這個檔案不是正確的 PDF，或檔案已損壞'), { final: true });
+    throw err;
+  }
+}
+
+async function openPdf(buffer) {
+  const pdf = await loadPdfjs();
+  try {
+    return await openWith(pdf, buffer);
+  } catch (err) {
+    if (err.final) throw err;
+    if (!pdf.legacy) {
+      // 新版的背景程式在這個瀏覽器跑不起來 → 之後都改用相容版本
+      try {
+        const legacy = await loadLegacyPdfjs();
+        const opened = await openWith(legacy, buffer);
+        pdfjsPromise = Promise.resolve(legacy);
+        return opened;
+      } catch (err2) {
+        if (err2.final) throw err2;
+      }
+    }
     throw new Error('無法開啟這個 PDF 檔');
   }
 }
@@ -297,14 +356,16 @@ export async function renderPdfPages(blob, onPage, { maxPages = 40, width = 2000
 export function detectMeta(text, filename = '') {
   const head = halfwidth(text.slice(0, 3000));
   const meta = { year: '', exam: '', subject: '', category: '', title: '' };
-  let m = head.match(/(\d{2,3})\s*年/);
+  let m = head.match(/(\d{2,3})\s*(?:學\s*)?年/);
   if (m) meta.year = m[1];
   m = head.match(/考試名稱\s*[:：]\s*([^\n]+)/);
   let exam = m ? m[1] : (head.match(/^[^\n]*考試(?!時間)[^\n]*$/m) || [''])[0];
-  exam = exam.trim().replace(/^\d{2,3}\s*年(度)?/, '').replace(/試題\s*$/, '');
+  // 年度可能在開頭（115 年…）或中間（中央警察大學 115 學年度…）
+  exam = exam.trim().replace(/\d{2,3}\s*(?:學\s*)?年度?/, '').replace(/試題\s*$/, '')
+    .replace(/([一-鿿])\s+(?=[一-鿿])/g, '$1');
   for (const noise of ['公務人員特種考試', '專門職業及技術人員', '公務人員']) exam = exam.split(noise).join('');
   meta.exam = exam.trim().slice(0, 40);
-  m = head.match(/類\s*科(?:名稱)?\s*[:：]\s*([^\n]+)/);
+  m = head.match(/(?:類\s*科|系\s*別|類\s*組)(?:名稱)?\s*[:：]\s*([^\n]+)/);
   if (m) meta.category = m[1].split(/\s{2,}|科\s*目/)[0].trim().slice(0, 30);
   // 考選部「專技高考」的考試名稱是一長串合辦的類科，改用「第幾次＋類科」比較好認
   if (meta.category && (/[、,，]/.test(meta.exam) || meta.exam.length > 20)) {
@@ -335,6 +396,13 @@ const FIG_MARK = /\[圖\s*(\d{1,3})\]/g;
 const GROUP = /請\s*(?:依序|依照順序|依下列|依上述)?\s*(?:回答|作答)\s*(?:下列|以下|後續|接下來)?\s*(?:的)?\s*(\d{1,2}|[二三四五六七八九])\s*題[。：:，,]?/;
 const CN_NUM = { 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 const FOLLOW_UP = /^\s*(?:承上題?|接續上題|延續上題)[，,、：:\s]*/;
+// 區段標題：「一、單一選擇題：(每題2分…)」「二、多重選擇題」「貳、複選題」→ 不屬於任何一題，並決定該區是單選還是多選
+const SECTION = /^\s*(?:[一二三四五六七八九十]{1,3}|[壹貳參叁肆伍陸柒捌玖拾]{1,2}|[(（][一二三四五六七八九十]{1,2}[)）])\s*[、.．:：]?\s*[^\n]{0,8}?(單一選擇題|單選題|多重選擇題|多選題|複選題|選擇題|是非題|測驗題|申論題|問答題|非選擇題|填充題)/;
+const MULTI_KIND = /多重選擇|多選|複選/;
+const SECTION_MARK = '\u0000section:';
+// 注意事項裡的範圍：「第1至20題為單一選擇題；第21至40題為多重選擇題」
+const RANGE_KIND = /第\s*(\d{1,3})\s*(?:題)?\s*(?:至|到|~|～|-|－)\s*(?:第)?\s*(\d{1,3})\s*題\s*(?:為|是|屬)?\s*(單一選擇題|單選題|多重選擇題|多選題|複選題)/g;
+const HAS_FIG = /\[圖\s*\d{1,3}\]/;
 const MAX_GAP = 5;
 const INLINE_ANS = /(?:[【[]\s*(?:答案|正解|解答)\s*[】\]]|(?:答案|正解|解答|答|Ans(?:wer)?)\s*[:：])\s*[（(]?\s*([A-E])(?![A-Za-z])/i;
 const EXPLAIN = /[【[]\s*(?:解析|詳解|解說|說明)\s*[】\]]|(?:解析|詳解|解說)\s*[:：]/;
@@ -342,10 +410,39 @@ const PASSAGE = /[^。\n]{0,30}?回答\s*第\s*(\d{1,3})\s*題?\s*(?:至|到|~|�
 const OPT_PAREN = /[（(]\s*([A-H])\s*[)）]/g;
 const OPT_LINE = /(?:^|\n)\s*([A-H])\s*[.．、:：]\s*/g;
 
+/**
+ * 每頁重複的頁首／頁尾（例如「刑法與刑事訴訟法 1」「…試題 第 1 頁」）：
+ * 去掉空白、數字換成 # 後，出現 3 次以上，或含頁碼且出現 2 次以上的短行，就當作頁首頁尾。
+ * 題號行、選項行、有標點的句子、圖片記號不算。另外「科目名稱＋頁碼」只出現一次也去掉。
+ */
+function dropPageHeaders(lines) {
+  const key = (ln) => halfwidth(ln).replace(/\s+/g, '').replace(/\d+/g, '#');
+  const counts = new Map();
+  for (const ln of lines) {
+    const k = key(ln);
+    if (k) counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const sub = halfwidth(lines.slice(0, 80).join('\n')).match(/科\s*目(?:名稱)?\s*[:：]\s*([^\n]+)/);
+  const subject = sub ? sub[1].split(/\s{2,}|考試時間|座號|代號/)[0].replace(/\s+/g, '') : '';
+  return lines.filter((ln) => {
+    const k = key(ln);
+    if (!k || k.length > 40 || HAS_FIG.test(ln) || CAND.test(halfwidth(ln)) || /^[（(]?[A-H][)）.．、:：]/.test(k) || /[。？?，,；;：:]/.test(k)) return true;
+    if (subject && k.includes('#') && k.replace(/#/g, '') === subject) return false;
+    const n = counts.get(k) || 0;
+    return !(n >= 3 || (n >= 2 && k.includes('#')));
+  });
+}
+
 function cleanLines(text) {
-  const lines = String(text).replace(/\r\n?/g, '\n').split('\n').filter((ln) => !PAGE_NOISE.test(halfwidth(ln)));
+  const lines = dropPageHeaders(String(text).replace(/\r\n?/g, '\n').split('\n').filter((ln) => !PAGE_NOISE.test(halfwidth(ln))));
   const out = [];
   for (let i = 0; i < lines.length; i += 1) {
+    const hw = halfwidth(lines[i]);
+    const sec = hw.trim().length <= 40 ? hw.match(SECTION) : null;
+    if (sec) {
+      out.push(SECTION_MARK + (MULTI_KIND.test(sec[1]) ? 'multi' : 'single'));
+      continue;
+    }
     if (LONE_NUM.test(halfwidth(lines[i])) && i + 1 < lines.length && lines[i + 1].trim() && !CAND.test(halfwidth(lines[i + 1]))) {
       out.push(`${lines[i].trim().replace(/[.、．]+$/, '')} ${lines[i + 1].trim()}`);
       i += 1;
@@ -422,6 +519,14 @@ function splitOptions(text) {
 
 export function parseQuestions(text) {
   const lines = cleanLines(text);
+  // 每一行屬於哪一種區段（'single'／'multi'／''）
+  const kindAt = [];
+  let kind = '';
+  lines.forEach((ln, i) => {
+    if (ln.startsWith(SECTION_MARK)) kind = ln.slice(SECTION_MARK.length);
+    kindAt[i] = kind;
+  });
+  const notMark = (ln) => !ln.startsWith(SECTION_MARK);
   const chain = questionChain(lines);
   const warnings = [];
   const passages = [];
@@ -434,7 +539,9 @@ export function parseQuestions(text) {
     return [fragment.slice(0, m.index), { from: Number(m[1]), to: Number(m[2]), text: `${cleanInline(intro)}\n${cleanInline(body)}`.trim() }];
   };
 
-  const preamble = (chain.length ? lines.slice(0, chain[0].idx) : lines).join('\n');
+  const preamble = (chain.length ? lines.slice(0, chain[0].idx) : lines).filter(notMark).join('\n');
+  const ranges = [...halfwidth(preamble).matchAll(RANGE_KIND)]
+    .map((x) => ({ from: Number(x[1]), to: Number(x[2]), multi: MULTI_KIND.test(x[3]) }));
   if (chain.length) {
     const [, p] = findPassage(preamble);
     if (p) passages.push(p);
@@ -442,7 +549,9 @@ export function parseQuestions(text) {
 
   const questions = chain.map((c, k) => {
     const end = k + 1 < chain.length ? chain[k + 1].idx : lines.length;
-    let block = [lines[c.idx].slice(c.col), ...lines.slice(c.idx + 1, end)].join('\n');
+    let block = [lines[c.idx].slice(c.col), ...lines.slice(c.idx + 1, end)].filter(notMark).join('\n');
+    const range = ranges.find((r) => c.num >= r.from && c.num <= r.to);
+    const multi = kindAt[c.idx] ? kindAt[c.idx] === 'multi' : Boolean(range?.multi);
     const figures = [...block.matchAll(FIG_MARK)].map((x) => Number(x[1]));
     block = block.replace(FIG_MARK, '');
     let concept = '';
@@ -476,6 +585,7 @@ export function parseQuestions(text) {
       inlineAnswer: answer,
       concept,
       figures,
+      multi,
     };
   });
 
@@ -523,8 +633,56 @@ const letters = (s) => String(s).match(/[A-E]/g) || [];
 /** 等同 Python 的 (?<![...])：檢查比對位置前一個字元，但不吃掉它 */
 const prevIs = (str, index, re) => index > 0 && re.test(str[index - 1]);
 
-export function parseAnswers(text) {
-  const t = halfwidth(text || '').replace(/＃/g, '#').replace(/＊/g, '*');
+// 答案檔的科目標題：「刑法與刑事訴訟法 試題解答」「英文 標準答案」
+const SUBJECT_HEAD = /^\s*(.{2,40}?)\s*(?:試題解答|標準答案|參考答案|測驗題答案|答案)\s*(?:[（(][^)）\n]*[)）])?\s*$/;
+
+/** 一份答案檔有好幾個科目時，只取和試題科目相同的那一段（到下一個科目或「附註」為止） */
+function pickSubject(t, subject) {
+  const lines = t.split('\n');
+  const heads = [];
+  lines.forEach((ln, i) => {
+    const m = ln.match(SUBJECT_HEAD);
+    if (m && !/^\d|[:：]/.test(m[1].trim())) heads.push({ i, name: m[1].replace(/\s+/g, '') });
+  });
+  if (heads.length < 2) return { text: t, sections: [] };
+  const names = heads.map((x) => x.name).filter((x) => x.length <= 20);
+  const want = String(subject || '').replace(/\s+/g, '');
+  const hit = want ? heads.find((x) => x.name === want || x.name.endsWith(want) || want.endsWith(x.name)) : null;
+  if (!hit) return { text: '', sections: names, missing: true };
+  const next = heads.find((x) => x.i > hit.i);
+  const body = lines.slice(hit.i + 1, next ? next.i : lines.length);
+  const note = body.findIndex((ln) => /^\s*附\s*[註注]\s*[:：]?/.test(ln));
+  return { text: (note >= 0 ? body.slice(0, note) : body).join('\n'), sections: names, matched: hit.name };
+}
+
+// 題號一列、答案一列（中央警察大學等）：「1 2 3 … 10」下一列「D C ABCDE 均給分 B 或D …」
+const ROW_NUMS = /^\d{1,3}(?:\s+\d{1,3}){2,}$/;
+const ROW_TOKEN = /^(?:[A-H]{1,8}|[A-H](?:或[A-H])+|均給分|一律給分|送分|[#*×])$/;
+function answerRows(body) {
+  const out = new Map();
+  const lines = body.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const head = lines[i].trim();
+    if (!ROW_NUMS.test(head)) continue;
+    const nums = head.split(/\s+/).map(Number);
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j += 1;
+    if (j >= lines.length) break;
+    const toks = lines[j].trim().replace(/([A-H])\s*或\s*(?=[A-H])/g, '$1或')
+      .replace(/(均|一律)\s*給\s*分/g, '$1給分').replace(/送\s*分/g, '送分').split(/\s+/);
+    if (toks.length !== nums.length || !toks.every((x) => ROW_TOKEN.test(x))) continue;
+    nums.forEach((n, k) => { if (!out.has(n)) out.set(n, toks[k]); });
+    i = j;
+  }
+  return out;
+}
+
+const sortLetters = (s) => [...new Set(String(s || '').toUpperCase().replace(/[^A-H]/g, ''))].sort().join('');
+
+/** subject：試題的科目名稱，答案檔有好幾科時用來挑出正確的那一段 */
+export function parseAnswers(text, subject = '') {
+  const picked = pickSubject(halfwidth(text || '').replace(/＃/g, '#').replace(/＊/g, '*'), subject);
+  const t = picked.text;
   let body = t;
   let notesPart = '';
   // 備註欄：優先找「備註：」（開頭說明常有「更正內容詳備註」，不能從那裡切）；沒有冒號才用最後一個「備註」
@@ -554,6 +712,8 @@ export function parseAnswers(text) {
     const n = Number(m[1]);
     if (!pairs.has(n)) pairs.set(n, m[2]);
   }
+  const rows = answerRows(body);
+  if (rows.size > raw.size) { raw = rows; method = 'rows'; }
   if (pairs.size > raw.size) { raw = pairs; method = 'pairs'; }
   // 3) 純字母串「CADB…」或「C A D B」
   if (!raw.size && /^[\sA-E,，、.;；|/]*$/.test(body.trim()) && /[A-E]/.test(body)) {
@@ -562,10 +722,13 @@ export function parseAnswers(text) {
   }
 
   const answers = new Map();
-  const multi = new Map();
+  const multi = new Map(); // 好幾個答案「都算對」（A 或 C）
+  const sets = new Map(); // 多選題：要「全部選對」（ACDE）
   const free = new Set();
   const flagged = new Set();
   for (const [num, token] of raw) {
+    if (/^(?:均給分|一律給分|送分)$/.test(token)) { free.add(num); continue; }
+    if (method === 'rows' && /^[A-H]{2,8}$/.test(token)) { sets.set(num, sortLetters(token)); continue; }
     const ls = letters(token);
     if (ls.length === 1) answers.set(num, ls[0]);
     else if (ls.length > 1) multi.set(num, ls);
@@ -590,7 +753,10 @@ export function parseAnswers(text) {
       }
     }
   }
-  return { answers, multi, free, flagged, method, count: raw.size };
+  return {
+    answers, multi, sets, free, flagged, method, count: raw.size,
+    sections: picked.sections, matched: picked.matched || '', missingSubject: Boolean(picked.missing),
+  };
 }
 
 // ---------------------------------------------------------------- 合併
@@ -600,14 +766,17 @@ export function buildPaper(questionsText, answersText = '', filename = '', figur
   const meta = detectMeta(questionsText, filename);
   const parsed = parseQuestions(questionsText);
   const figureById = new Map((figures || []).map((f) => [Number(f.id), f]));
-  const key = answersText.trim() ? parseAnswers(answersText)
-    : { answers: new Map(), multi: new Map(), free: new Set(), flagged: new Set(), method: '', count: 0 };
+  const key = answersText.trim() ? parseAnswers(answersText, meta.subject)
+    : { answers: new Map(), multi: new Map(), sets: new Map(), free: new Set(), flagged: new Set(), method: '', count: 0, sections: [] };
   const warnings = [...parsed.warnings];
 
   const out = parsed.questions.map((q) => {
     const n = q.number;
     const keys = q.options.map((o) => o.key);
-    let answer = q.inlineAnswer || key.answers.get(n) || '';
+    const isMulti = Boolean(q.multi || key.sets.has(n));
+    let answer = q.inlineAnswer || key.sets.get(n) || key.answers.get(n) || '';
+    if (isMulti) answer = sortLetters(answer);
+    const valid = (a) => Boolean(a) && [...a].every((ch) => keys.includes(ch));
     let status = 'ok';
     let note = '';
     if (!q.stem) { status = 'incomplete'; note = '缺少題目內容'; } else if (keys.length < 2) {
@@ -621,7 +790,7 @@ export function buildPaper(questionsText, answersText = '', filename = '', figur
       status = 'review'; note = '官方答案有更正，請參考答案檔的備註後確認';
     } else if (!answer) {
       status = 'review'; note = '沒有對應的答案，請點選正確答案';
-    } else if (!keys.includes(answer)) {
+    } else if (!valid(answer)) {
       status = 'review'; note = `答案「${answer}」不在選項中，請確認`; answer = '';
     }
     const { figures: ids, ...rest } = q;
@@ -630,14 +799,17 @@ export function buildPaper(questionsText, answersText = '', filename = '', figur
       status = 'review';
       note = '題目提到圖片，但沒有擷取到，請到編輯頁加入圖片';
     }
-    return { ...rest, images, answer: keys.includes(answer) ? answer : '', status, statusNote: note };
+    return { ...rest, multi: isMulti, images, answer: valid(answer) ? answer : '', status, statusNote: note };
   });
 
-  if (answersText.trim() && !key.count) {
+  if (key.missingSubject) {
+    const list = key.sections.slice(0, 8).join('、');
+    warnings.push(`答案檔裡有好幾個科目（${list}${key.sections.length > 8 ? '…' : ''}），找不到「${meta.subject || '這個科目'}」的答案。請確認試題和答案是同一次考試，或只貼上這一科的答案。`);
+  } else if (answersText.trim() && !key.count) {
     warnings.push('答案檔沒有辨識到任何答案，請確認格式（例如：1.C 2.A，或考選部的答案 PDF）');
   } else if (key.count) {
     const nums = new Set(out.map((q) => q.number));
-    const extra = [...key.answers.keys()].filter((n) => !nums.has(n));
+    const extra = [...key.answers.keys(), ...key.sets.keys()].filter((n) => !nums.has(n));
     if (out.length && extra.length && extra.length > nums.size * 0.2) {
       warnings.push(`答案檔有 ${key.count} 題，但只解析到 ${out.length} 題題目，請確認試題與答案是否為同一份`);
     }
@@ -653,6 +825,7 @@ export function buildPaper(questionsText, answersText = '', filename = '', figur
     stats: {
       total: out.length, ok: count('ok'), review: count('review'), incomplete: count('incomplete'),
       answers: key.count, answerMethod: key.method, withImages: out.filter((q) => q.images.length).length,
+      multi: out.filter((q) => q.multi).length, answerSection: key.matched || '',
     },
   };
 }

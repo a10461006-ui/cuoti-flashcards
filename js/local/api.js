@@ -1,7 +1,7 @@
 // 本機引擎：用與伺服器版相同的 API 路徑與回應格式，資料全部存在這台裝置（IndexedDB）。
 // 畫面程式只要呼叫 api.get('/api/...')，不需要知道資料在哪裡。
 import { ApiError } from './errors.js';
-import { all, mem, openDb, requestPersistence, write } from './db.js';
+import { all, mem, openDb, requestPersistence, storageStatus, write } from './db.js';
 import { buildPaper, extractText } from './exam.js';
 import { buildTemplate, parseWorkbook } from './importer.js';
 import { GRADES, MASTERED_DAYS, newCard, schedule } from './srs.js';
@@ -37,6 +37,8 @@ export async function handle(method, path, body) {
 
 const fail = (status, message) => { throw new ApiError(status, message); };
 const isReady = (q) => q.status === 'ok' && Boolean(q.answer);
+/** 答案統一成「排序後的字母」：單選 'C'、多選 'ACDE'（多選題要全部選對才算對） */
+const sortLetters = (s) => [...new Set(String(s ?? '').toUpperCase().replace(/[^A-H]/g, ''))].sort().join('');
 const cardOf = (qid) => mem.cards.get(qid) || null;
 const pad = (n) => String(n).padStart(2, '0');
 const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -68,6 +70,7 @@ function userOut(p = profile()) {
     displayName: p.nickname || p.google?.name || '同學',
     settings: { newPerDay: p.newPerDay, shuffleOptions: p.shuffleOptions },
     exam: p.exam, storage: p.storage, google: p.google, setupDone: p.setupDone, local: true,
+    volatile: storageStatus().volatile, volatileReason: storageStatus().reason,
   };
 }
 
@@ -80,7 +83,7 @@ function questionOut(q) {
   const paper = q.paperId ? mem.papers.get(q.paperId) : null;
   return {
     id: q.id, subjectId: q.subjectId, subject: mem.subjects.get(q.subjectId)?.name ?? '',
-    source: q.source, stem: q.stem, options: q.options, answer: q.answer, images: q.images || [],
+    source: q.source, stem: q.stem, options: q.options, answer: q.answer, multi: Boolean(q.multi), images: q.images || [],
     keypoint: q.keypoint, mistake: q.mistake, concept: q.concept, note: q.note, tags: q.tags || [],
     status: q.status, statusNote: q.statusNote, starred: Boolean(q.starred),
     createdAt: q.createdAt, updatedAt: q.updatedAt,
@@ -96,7 +99,7 @@ function getQuestion(id) {
 function newQuestionRecord(subjectId, q, origin = 'manual', paperId = null, number = null) {
   const now = nowIso();
   return {
-    subjectId, source: q.source || '', stem: q.stem || '', options: q.options || [], answer: q.answer || '', images: q.images || [],
+    subjectId, source: q.source || '', stem: q.stem || '', options: q.options || [], answer: q.answer || '', multi: Boolean(q.multi), images: q.images || [],
     keypoint: q.keypoint || '', mistake: q.mistake || '', concept: q.concept || '', note: q.note || '',
     tags: q.tags || [], status: q.status, statusNote: q.statusNote || '', starred: false,
     contentHash: q.contentHash, origin, createdAt: now, updatedAt: now, paperId, number,
@@ -232,7 +235,11 @@ function normalizeQuestion(body) {
   }
   if (options.length > MAX_OPTIONS) fail(400, `選項最多 ${MAX_OPTIONS} 個`);
   if (!stem && !options.length) fail(400, '題目內容不可空白');
-  const answer = keyMap.get(String(body.answer || '').trim().toUpperCase()) || '';
+  // 多選題：答案是好幾個字母（ACDE），每個都要對應到選項；單選題只有一個字母
+  const multi = Boolean(body.multi);
+  const answer = multi
+    ? sortLetters([...sortLetters(body.answer)].map((k) => keyMap.get(k) || '').join(''))
+    : keyMap.get(String(body.answer || '').trim().toUpperCase()) || '';
   let status = 'ok';
   let statusNote = '';
   if (!stem) [status, statusNote] = ['incomplete', '缺少題幹，請補上題目內容'];
@@ -240,7 +247,7 @@ function normalizeQuestion(body) {
   else if (!answer) [status, statusNote] = ['review', '尚未指定正確答案'];
   const tags = [...new Set((body.tags || []).map((t) => str(t, 30).trim()).filter(Boolean))].slice(0, 20);
   return {
-    source: str(body.source, 200).trim(), stem, options, answer,
+    source: str(body.source, 200).trim(), stem, options, answer, multi,
     keypoint: cleanNote(str(body.keypoint, 10000)), mistake: cleanNote(str(body.mistake, 10000)),
     concept: cleanNote(str(body.concept, 10000)), note: cleanNote(str(body.note, 10000)),
     tags, status, statusNote, contentHash: contentHash(stem, options.map((o) => o.text)),
@@ -313,8 +320,12 @@ route('PATCH', '/api/questions/(\\d+)', async ({ params: [id], body }) => {
   const q = { ...getQuestion(id) };
   if (body.starred != null) q.starred = Boolean(body.starred);
   if (body.answer != null) {
-    const answer = String(body.answer).trim().toUpperCase();
-    if (!q.options.some((o) => o.key === answer)) fail(400, '答案必須是其中一個選項');
+    // 先拿掉分隔符號，剩下的每個字母都必須是選項代號（不默默丟掉不存在的代號）
+    const raw = String(body.answer).toUpperCase().replace(/[\s,，、]/g, '');
+    const answer = q.multi ? sortLetters(raw) : raw;
+    if (!/^[A-Z]+$/.test(raw) || ![...raw].every((k) => q.options.some((o) => o.key === k)) || (!q.multi && answer.length !== 1)) {
+      fail(400, '答案必須是其中的選項');
+    }
     q.answer = answer;
     if (q.stem && q.options.length >= 2) { q.status = 'ok'; q.statusNote = ''; }
     q.updatedAt = nowIso();
@@ -527,10 +538,10 @@ route('POST', '/api/practice/answer', async ({ body }) => {
   const q = mem.questions.get(Number(body.questionId));
   if (!q || (body.questionCreatedAt && body.questionCreatedAt !== q.createdAt)) fail(404, '找不到這一題');
   if (body.clientId && [...mem.reviews.values()].some((r) => r.clientId === body.clientId)) {
-    return { correct: String(body.chosen).toUpperCase() === q.answer, card: cardOut(cardOf(q.id)), duplicate: true };
+    return { correct: sortLetters(body.chosen) === sortLetters(q.answer), card: cardOut(cardOf(q.id)), duplicate: true };
   }
-  const chosen = String(body.chosen || '').trim().toUpperCase();
-  const correct = chosen === q.answer;
+  const chosen = sortLetters(body.chosen);
+  const correct = Boolean(chosen) && chosen === sortLetters(q.answer);
   let grade = GRADES.includes(body.grade) ? body.grade : 'good';
   if (!correct) grade = 'again';
   else if (grade === 'again') grade = 'good';
@@ -651,7 +662,7 @@ route('POST', '/api/papers', async ({ body }) => {
     ops.push({ op: 'add', store: 'questions', value: newQuestionRecord(subjectId, {
       source: `${title} 第 ${q.number} 題`, stem: q.stem,
       options: q.options.map((o) => ({ key: o.key, text: o.text, mark: '', mistake: '', concept: '', note: '' })),
-      answer: q.answer, concept: q.concept || '', status: q.status, statusNote: q.statusNote, contentHash: q.hash,
+      answer: q.answer, multi: Boolean(q.multi), concept: q.concept || '', status: q.status, statusNote: q.statusNote, contentHash: q.hash,
       images: q.images.slice(0, MAX_IMAGES),
     }, `paper:${paperId}`, paperId, q.number) });
     inserted += 1;

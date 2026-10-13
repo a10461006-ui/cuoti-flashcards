@@ -24,7 +24,8 @@ function append(el, children) {
 }
 
 export function clear(el, ...children) {
-  el.replaceChildren();
+  if (el.replaceChildren) el.replaceChildren();
+  else while (el.firstChild) el.removeChild(el.firstChild); // Safari 13 以前
   append(el, children);
   return el;
 }
