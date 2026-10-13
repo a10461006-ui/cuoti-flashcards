@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { goBack } from '../app.js';
 import { invalidateSubjects } from '../store.js';
-import { clear, downloadTemplate, h, icon, showError, spinner, toast, topbar } from '../ui.js';
+import { clear, downloadTemplate, dropZone, h, icon, showError, spinner, toast, topbar } from '../ui.js';
 
 export async function render({ root }) {
   const fileInput = h('input', {
@@ -11,6 +11,7 @@ export async function render({ root }) {
   const drop = h('label', { class: 'dropzone' },
     icon('upload'),
     h('div', { style: { fontWeight: 700 } }, '選擇 Excel 檔案（可多選）'),
+    h('div', { class: 'small muted drop-tip' }, '也可以直接把檔案拖曳到這裡'),
     h('div', { class: 'small muted' }, '支援 .xlsx，每個檔案會成為一個科目'),
     fileInput,
   );
@@ -37,9 +38,7 @@ export async function render({ root }) {
     }
   };
   fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
-  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); handleFiles([...e.dataTransfer.files]); });
+  dropZone(drop, handleFiles);
 }
 
 export function fileCard(file) {

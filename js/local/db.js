@@ -2,9 +2,12 @@
 // 題目數量通常在幾千題以內，全部放在記憶體查詢最快也最簡單。
 // IndexedDB 的自動編號不會重複使用，刪除題目後新題目不會沿用舊編號。
 
+// 雲端同步用的欄位（寫入時自動加上）：uid 是跨裝置共用的編號、mtime 是最後修改時間（毫秒）；
+// 開啟過同步後，刪除科目／考古題／題目會在 tombstones 留下紀錄，其他裝置同步時才知道要一起刪除。
+
 // 測試頁會設定 window.FC_DB_NAME，使用獨立的資料庫，不會動到真正的資料
 const DB_NAME = window.FC_DB_NAME || 'cuoti-flashcards';
-const VERSION = 1;
+const VERSION = 2;
 export const STORES = {
   meta: { keyPath: 'key' },
   subjects: { keyPath: 'id', autoIncrement: true },
@@ -12,9 +15,51 @@ export const STORES = {
   cards: { keyPath: 'questionId' },
   reviews: { keyPath: 'id', autoIncrement: true },
   papers: { keyPath: 'id', autoIncrement: true },
+  tombstones: { keyPath: 'uid' },
 };
+export const SYNCED = new Set(['subjects', 'papers', 'questions', 'cards', 'reviews']);
+const TOMBSTONED = new Set(['subjects', 'papers', 'questions']);
 
 export const mem = Object.fromEntries(Object.keys(STORES).map((name) => [name, new Map()]));
+
+/** 跨裝置共用的編號（隨機 18 碼） */
+export function newUid() {
+  const bytes = new Uint8Array(9);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 本機資料有變動時通知雲端同步（同步本身寫入的資料不算）
+let changeSeq = 0;
+const changeListeners = new Set();
+export const localChanges = () => changeSeq;
+export function onLocalChange(fn) {
+  changeListeners.add(fn);
+  return () => changeListeners.delete(fn);
+}
+export function markLocalChange() {
+  changeSeq += 1;
+  for (const fn of changeListeners) { try { fn(); } catch { /* 忽略 */ } }
+}
+
+/** 一般寫入：補上 uid、mtime；開啟過同步的話，刪除時留下刪除紀錄 */
+function stamp(ops) {
+  const now = Date.now();
+  const tracking = Boolean(mem.meta.get('sync')?.tracking);
+  const out = [];
+  for (const o of ops) {
+    out.push(o);
+    if (!SYNCED.has(o.store)) continue;
+    if (o.op === 'put' || o.op === 'add') {
+      if (o.store !== 'cards' && !o.value.uid) o.value.uid = newUid();
+      o.value.mtime = now;
+    } else if (o.op === 'delete' && tracking && TOMBSTONED.has(o.store)) {
+      const uid = mem[o.store].get(o.key)?.uid;
+      if (uid) out.push({ op: 'put', store: 'tombstones', value: { uid, store: o.store, at: now } });
+    }
+  }
+  return out;
+}
 let db = null;
 let opening = null;
 // 暫時模式：瀏覽器不讓網站存資料（無痕模式、封鎖所有 Cookie、舊版 Safari…）時，資料只放在記憶體，App 照樣能用
@@ -116,10 +161,17 @@ function writeVolatile(ops) {
 /**
  * 在同一個交易中寫入多筆：ops = [{ op: 'put' | 'add' | 'delete' | 'clear', store, value?, key? }]
  * 交易成功後才更新記憶體；回傳每個 add 產生的編號（依順序）。
+ * sync: true 是雲端同步自己的寫入：保留資料原本的 uid／mtime，不留刪除紀錄，也不會再觸發同步。
  */
-export function write(ops) {
-  if (!ops.length) return Promise.resolve([]);
-  if (volatile) return writeVolatile(ops);
+export async function write(ops, { sync = false } = {}) {
+  if (!ops.length) return [];
+  const list = sync ? ops : stamp(ops);
+  const ids = await (volatile ? writeVolatile(list) : writeDb(list));
+  if (!sync && list.some((o) => SYNCED.has(o.store) && o.op !== 'clear')) markLocalChange();
+  return ids;
+}
+
+function writeDb(ops) {
   const names = [...new Set(ops.map((o) => o.store))];
   return new Promise((resolve, reject) => {
     const tx = db.transaction(names, 'readwrite');

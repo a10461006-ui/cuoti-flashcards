@@ -64,6 +64,8 @@ const ICONS = {
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v12H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
   scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/>',
+  cloud: '<path d="M7 19h10.5a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.34 9.5 4.75 4.75 0 0 0 7 19z"/>',
+  cloudOff: '<path d="M7 19h10.5a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.34 9.5 4.75 4.75 0 0 0 7 19z"/><path d="M4 4l16 16"/>',
 };
 
 export function icon(name, cls = '') {
@@ -295,6 +297,52 @@ export async function downloadTemplate() {
   const { api } = await import('./api.js');
   downloadBlob(await api.get('/api/import/template'), '錯題匯入範本.xlsx');
 }
+
+// ---- 拖曳檔案（電腦）
+
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+
+/**
+ * 讓 el 可以接收拖曳進來的檔案：拖到上面時加上 .drag，放開時呼叫 onFiles(files)
+ * 用計數器處理拖過子元素時的 dragenter／dragleave，框線才不會一直閃
+ */
+export function dropZone(el, onFiles) {
+  let depth = 0;
+  const off = () => { depth = 0; el.classList.remove('drag'); };
+  el.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    el.classList.add('drag');
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  el.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) off();
+  });
+  el.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    off(); // 外層的接收區也要清掉框線
+    if (e.fcDropped) return; // 裡層的接收區已經收下了
+    e.fcDropped = true;
+    const files = [...(e.dataTransfer.files || [])];
+    if (files.length) onFiles(files);
+  });
+  return el;
+}
+
+// 檔案沒有放在可接收的區域時，不要讓瀏覽器直接打開檔案（會離開 App，剛填的內容就不見了）
+window.addEventListener('dragover', (e) => {
+  if (!hasFiles(e) || e.defaultPrevented) return; // 已經由接收區處理
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'none';
+});
+window.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
 
 export function debounce(fn, ms) {
   let t;

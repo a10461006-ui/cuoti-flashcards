@@ -784,3 +784,35 @@ button.opt:active { background: var(--surface-2); transform: scale(.995); }
 .volatile-banner.mini .icon-btn { display: none; }
 .opt-edit .pick.multi { border-radius: 10px; }
 .multi-switch { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+
+/* 拖曳上傳（電腦）：說明文字只在有滑鼠的裝置顯示 */
+.drop-tip { display: none; }
+@media (hover: hover) and (pointer: fine) { .drop-tip { display: block; } .pickers .drop-tip, .img-add .drop-tip { display: inline-flex; align-items: center; } }
+.drop-card { position: relative; }
+.drop-veil {
+  display: none; position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 2;
+  align-items: center; justify-content: center; gap: 8px; border-radius: var(--radius);
+  border: 2px dashed var(--primary); background: var(--primary-soft); color: var(--primary-text); font-weight: 700; pointer-events: none;
+}
+.drop-veil svg { width: 22px; height: 22px; }
+.drop-card.drag .drop-veil { display: flex; }
+.page.drag .drop-card:not(.drag) { outline: 2px dashed var(--border-strong); outline-offset: 2px; }
+.img-edit.drag { outline: 2px dashed var(--primary); outline-offset: 4px; border-radius: var(--radius-sm); background: var(--primary-soft); }
+
+/* 雲端同步 */
+.cloud-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font-size: 13px; font-weight: 600;
+  white-space: nowrap; text-decoration: none; cursor: pointer;
+}
+.cloud-chip svg { width: 16px; height: 16px; flex: none; }
+.cloud-chip.ok svg { color: var(--ok); }
+.cloud-chip.busy svg { color: var(--primary-text); animation: cloud-pulse 1.2s ease-in-out infinite; }
+.cloud-chip.need { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-text); }
+.cloud-chip.bad { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn); }
+@keyframes cloud-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .cloud-chip.busy svg { animation: none; } }
+.greet .cloud-chip { margin-top: 4px; }
+.cloud-steps { margin: 4px 0 12px; padding-left: 1.2em; color: var(--text-2); font-size: 14px; line-height: 1.7; }
+.cloud-steps li + li { margin-top: 2px; }
+.row .cloud-progress { font-size: 13px; color: var(--primary-text); }

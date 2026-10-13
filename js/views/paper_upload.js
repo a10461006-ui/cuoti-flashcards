@@ -2,10 +2,12 @@
 import { api, MODE } from '../api.js';
 import { goBack, navigate } from '../app.js';
 import { invalidateSubjects, loadSubjects } from '../store.js';
-import { clear, confirmDialog, debounce, figureList, h, icon, promptDialog, rich, showError, spinner, toast, topbar } from '../ui.js';
+import { clear, confirmDialog, debounce, dropZone, figureList, h, icon, promptDialog, rich, showError, spinner, toast, topbar } from '../ui.js';
 
 const ACCEPT = '.pdf,.docx,.txt,.xlsx,application/pdf,text/plain,image/*';
 const isImage = (file) => /^image\//.test(file.type || '') || /\.(jpe?g|png|heic|heif|webp|bmp|gif)$/i.test(file.name);
+// 檔名看起來是答案檔：「答案」「解答」「更正」，或考選部的 ANS0701／MOD0701
+const isAnswerName = (file) => /答案|解答|更正|answer|(?:^|[^a-z])(?:ans|mod)(?:\d|[^a-z]|$)/i.test(file.name.replace(/\.[^.]+$/, ''));
 
 export async function render({ root }) {
   const subjects = await loadSubjects(true);
@@ -36,14 +38,35 @@ export async function render({ root }) {
   qArea.addEventListener('input', () => { state.qText = qArea.value; schedule(); });
   aArea.addEventListener('input', () => { state.aText = aArea.value; schedule(); });
 
+  /**
+   * 收到檔案（選擇檔案或拖曳）：照片 → OCR；一份文件 → 放到 kind；
+   * 試題和答案一起選／一起拖進來 → 依檔名自動分到「試題」和「答案」
+   */
+  async function takeFiles(kind, files) {
+    if (!files.length) return;
+    const docs = files.filter((f) => !isImage(f));
+    if (!docs.length) { await ocrPhotos(kind || 'q', files); return; }
+    const answers = docs.filter(isAnswerName);
+    const questions = docs.filter((f) => !isAnswerName(f));
+    if (docs.length === 1) {
+      await loadFile(kind || (answers.length ? 'a' : 'q'), docs[0]);
+    } else if (answers.length && questions.length) {
+      await loadFile('q', questions[0]);
+      await loadFile('a', answers[0]);
+      toast(docs.length > 2 ? '一次只能放一份試題和一份答案，其他檔案沒有讀取' : `試題：${questions[0].name}　答案：${answers[0].name}`);
+    } else {
+      const target = kind || (answers.length ? 'a' : 'q');
+      await loadFile(target, docs[0]);
+      toast(`一次只能放一份${target === 'q' ? '試題' : '答案'}，已讀取「${docs[0].name}」`);
+    }
+  }
+
   const filePicker = (kind) => {
     const input = h('input', { type: 'file', accept: ACCEPT, hidden: true, multiple: true });
     input.addEventListener('change', async () => {
       const files = [...input.files];
       input.value = '';
-      if (!files.length) return;
-      if (files.every(isImage)) await ocrPhotos(kind, files);
-      else await loadFile(kind, files.find((f) => !isImage(f)));
+      await takeFiles(kind, files);
     });
     return h('label', { class: 'btn btn-sm' }, icon('upload'), kind === 'q' ? '選擇試題檔' : '選擇答案檔', input);
   };
@@ -140,13 +163,19 @@ export async function render({ root }) {
     { append, filename: append ? null : files[0].name });
   const ocrPdf = (kind, file) => runOcr(kind, `OCR：${file.name}`, (ocr, onProgress) => ocr.recognizePdf(file, onProgress), { filename: file.name });
 
+  const qCard = dropZone(stepCard('1', '試題', null, [cameraPicker('q'), filePicker('q')], qInfo, qArea), (files) => takeFiles('q', files));
+  const aCard = dropZone(stepCard('2', '答案', '選填', [cameraPicker('a'), filePicker('a')], aInfo, aArea), (files) => takeFiles('a', files));
+  // 拖到兩張卡片以外的地方：依檔名自動判斷是試題還是答案
+  dropZone(main, (files) => takeFiles(null, files));
+
   clear(main,
     h('div', { class: 'banner info', style: { marginBottom: '14px' } }, icon('book'),
       h('div', null,
         h('div', { class: 't' }, '支援考選部的試題與答案 PDF（含題目圖片）'),
-        h('div', { class: 'd' }, '也可以上傳 Word（.docx）、文字檔、直接貼上文字，或用手機拍照、上傳掃描檔，以文字辨識（OCR）讀取。OCR 在你的裝置上執行，照片不會上傳；第一次使用需要下載約 5.6 MB。'))),
-    stepCard('1', '試題', null, [cameraPicker('q'), filePicker('q')], qInfo, qArea),
-    stepCard('2', '答案', '選填', [cameraPicker('a'), filePicker('a')], aInfo, aArea),
+        h('div', { class: 'd' }, '也可以上傳 Word（.docx）、文字檔、直接貼上文字，或用手機拍照、上傳掃描檔，以文字辨識（OCR）讀取。OCR 在你的裝置上執行，照片不會上傳；第一次使用需要下載約 5.6 MB。'),
+        h('div', { class: 'd drop-tip' }, '用電腦的話，可以直接把檔案拖曳到下面的「試題」或「答案」；試題和答案一起拖進來，會依檔名自動分開。'))),
+    qCard,
+    aCard,
     previewHost,
   );
   drawBar();
@@ -305,12 +334,13 @@ export async function render({ root }) {
 }
 
 function stepCard(no, title, hint, pickers, info, area) {
-  return h('div', { class: 'card', style: { marginTop: '12px' } },
+  return h('div', { class: 'card drop-card', style: { marginTop: '12px' } },
     h('div', { class: 'step-head' },
       h('span', { class: 'step-no' }, no), h('b', { class: 'grow' }, title),
       hint ? h('span', { class: 'small muted' }, hint) : null),
-    h('div', { class: 'pickers' }, pickers),
+    h('div', { class: 'pickers' }, pickers, h('span', { class: 'drop-tip small muted' }, '或把檔案拖曳到這裡')),
     info,
     area,
+    h('div', { class: 'drop-veil', 'aria-hidden': 'true' }, icon('upload'), `放開就上傳${title}`),
   );
 }

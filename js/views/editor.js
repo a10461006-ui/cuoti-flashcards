@@ -4,7 +4,7 @@ import { goBack, navigate } from '../app.js';
 import { invalidateSubjects, loadSubjects } from '../store.js';
 import { cleanInline } from '../local/textutil.js';
 import {
-  autoGrow, clear, confirmDialog, h, icon, iconButton, imageToDataUrl, openImage, openSheet, promptDialog, segmented, showError, switchInput, toast, topbar,
+  autoGrow, clear, confirmDialog, dropZone, h, icon, iconButton, imageToDataUrl, openImage, openSheet, promptDialog, segmented, showError, switchInput, toast, topbar,
 } from '../ui.js';
 
 const LETTERS = 'ABCDEFGH';
@@ -85,18 +85,27 @@ export async function render({ root, params, query }) {
 
   // ---- 題目附圖
   const imagesHost = h('div', { class: 'img-edit' });
+  const addImages = async (list) => {
+    const files = list.filter((f) => /^image\//.test(f.type || '') || /\.(jpe?g|png|heic|heif|webp|bmp|gif)$/i.test(f.name));
+    if (!files.length) { toast('請放入圖片檔（JPG、PNG）', 'bad'); return; }
+    const room = MAX_IMAGES - form.images.length;
+    if (files.length > room) toast(`每題最多 ${MAX_IMAGES} 張圖片${room ? `，只加入前 ${room} 張` : ''}`);
+    for (const file of files.slice(0, room)) {
+      try {
+        form.images.push(await imageToDataUrl(file));
+        touch();
+      } catch (err) { showError(err); }
+    }
+    drawImages();
+  };
+  // 電腦可以直接把圖片拖曳到圖片區
+  dropZone(imagesHost, addImages);
   const imagePicker = (label, camera) => {
     const input = h('input', { type: 'file', accept: 'image/*', hidden: true, multiple: !camera, capture: camera ? 'environment' : null });
     input.addEventListener('change', async () => {
-      const files = [...input.files].slice(0, MAX_IMAGES - form.images.length);
+      const files = [...input.files];
       input.value = '';
-      for (const file of files) {
-        try {
-          form.images.push(await imageToDataUrl(file));
-          touch();
-        } catch (err) { showError(err); }
-      }
-      drawImages();
+      if (files.length) await addImages(files);
     });
     return h('label', { class: 'btn btn-sm' }, icon(camera ? 'camera' : 'image'), label, input);
   };
@@ -106,7 +115,8 @@ export async function render({ root, params, query }) {
         h('img', { src: img.src, alt: `附圖 ${i + 1}` })),
       iconButton('x', `移除第 ${i + 1} 張圖`, () => { form.images.splice(i, 1); touch(); drawImages(); }, { class: 'icon-btn img-del' }),
     ))) : null,
-    form.images.length < MAX_IMAGES ? h('div', { class: 'btn-row img-add' }, imagePicker('拍照', true), imagePicker('選擇圖片', false)) : null,
+    form.images.length < MAX_IMAGES ? h('div', { class: 'btn-row img-add' }, imagePicker('拍照', true), imagePicker('選擇圖片', false),
+      h('span', { class: 'drop-tip small muted' }, '或把圖片拖曳到這裡')) : null,
   );
   drawImages();
 

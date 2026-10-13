@@ -1,7 +1,8 @@
 // 進入點：路由、底部分頁列、首次設定／登入檢查
 import { api, flushPending, MODE, onUnauthorized } from './api.js';
+import { consumeAuthRedirect, initCloud } from './cloud.js';
 import { retryPendingRegistration } from './google.js';
-import { state } from './store.js';
+import { invalidateSubjects, state } from './store.js';
 import { clear, h, icon, spinner } from './ui.js';
 
 const routes = [
@@ -156,7 +157,20 @@ window.addEventListener('beforeinstallprompt', (e) => {
   state.installPrompt = e;
 });
 
+// 雲端同步更新了這台裝置的資料：正在看的頁面如果只是瀏覽用，就重新整理；
+// 正在練習、編輯、上傳或開著對話框時不打斷，下次切換頁面就會看到新資料
+const REFRESHABLE = new Set(['/', '/bank', '/papers', '/stats', '/settings']);
+async function onDataChanged() {
+  invalidateSubjects();
+  try { state.user = await api.get('/api/auth/me'); } catch { /* 沿用 */ }
+  const { path } = parseHash();
+  const viewing = REFRESHABLE.has(path) || /^\/(?:q|paper)\/\d+$/.test(path);
+  if (viewing && !document.querySelector('.overlay, .img-viewer')) render();
+}
+
 async function boot() {
+  // 從 Google 授權回來：網址 # 後面帶著權杖，要在路由讀取網址之前處理掉
+  const authResult = MODE === 'local' ? consumeAuthRedirect() : null;
   try {
     state.user = await api.get('/api/auth/me', { allow401: true });
   } catch (err) {
@@ -181,6 +195,8 @@ async function boot() {
     if (state.user) flushPending();
   } else {
     retryPendingRegistration();
+    window.addEventListener('fc:data-changed', onDataChanged);
+    if (state.user?.setupDone) initCloud(authResult).catch((err) => console.error(err));
   }
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

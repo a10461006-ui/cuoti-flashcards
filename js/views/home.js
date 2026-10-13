@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { navigate } from '../app.js';
+import { cloudChip, cloudTip } from '../cloud.js';
 import { prefs, state } from '../store.js';
 import { clear, h, icon, openSheet, pct, segmented, showError, switchInput } from '../ui.js';
 import { paperCard } from './papers.js';
@@ -22,10 +23,13 @@ export async function render({ root }) {
     h('div', { class: 'grow' },
       h('div', { class: 'date' }, dateText),
       h('h2', null, `${hello}，${name}`),
+      cloudChip(),
     ),
     d.streak ? h('span', { class: 'badge warn', title: '連續練習天數' }, icon('flame'), `連續 ${d.streak} 天`) : null,
   ));
 
+  const tip = cloudTip();
+  if (tip) page.append(tip);
   if (!d.ready && !d.review && !d.incomplete && !papers.length) {
     page.append(emptyState());
     return;

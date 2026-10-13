@@ -1,6 +1,7 @@
 // 第一次使用的設定精靈：Google 註冊 → 暱稱 → 考試／科目 → 練習設定 → 資料存放位置
 import { api } from '../api.js';
 import { navigate } from '../app.js';
+import { cloudAvailable, cloudStatus, connectDrive, turnOffSync } from '../cloud.js';
 import { googleConfigured, googleRequired, googleUsable, renderGoogleButton, sendRegistration } from '../google.js';
 import { invalidateSubjects, state } from '../store.js';
 import { clear, h, icon, segmented, showError, switchInput, toast } from '../ui.js';
@@ -52,7 +53,7 @@ export async function render({ root }) {
     custom: [],
     newPerDay: me.settings?.newPerDay ?? 20,
     shuffle: me.settings?.shuffleOptions ?? true,
-    storage: 'device',
+    storage: me.storage === 'gdrive' || cloudStatus().enabled ? 'gdrive' : 'device',
   };
   const wrap = h('div', { class: 'auth-wrap setup' });
   clear(root, wrap);
@@ -95,7 +96,7 @@ export async function render({ root }) {
         h('b', null, '用 Google 帳號註冊'),
         signedIn || btnHost,
         h('p', { class: 'small muted', style: { margin: 0 } },
-          '登入後，你的 Google 名稱與 Email 會登記到開發者的使用者名單，只用來了解使用人數與聯絡；你的題目與練習紀錄只存在你自己的裝置，不會上傳。',
+          '登入後，你的 Google 名稱與 Email 會登記到開發者的使用者名單，只用來了解使用人數與聯絡；你的題目與練習紀錄不會給開發者（只存在你的裝置，或你自己的 Google 雲端硬碟）。',
           h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener' }, '隱私權政策')),
         nav(() => go(1), { disabled: googleRequired() && !s.google, label: s.google ? '下一步' : googleRequired() ? '請先登入' : '略過，直接開始' }),
       );
@@ -124,7 +125,7 @@ export async function render({ root }) {
       ),
       h('ul', { class: 'intro-list' },
         h('li', null, icon('book'), '題庫自己匯入：Excel 訂正本、考古題 PDF／Word'),
-        h('li', null, icon('check'), '資料存在你的裝置，沒網路也能練習'),
+        h('li', null, icon('check'), '資料存在你的裝置，沒網路也能練習；也能同步到自己的 Google 雲端硬碟'),
         h('li', null, icon('shuffle'), '選項每次重新洗牌，避免背答案位置'),
       ),
       IN_APP_BROWSER ? inAppWarning() : null,
@@ -214,11 +215,18 @@ export async function render({ root }) {
           h('span', { class: 'radio' }), h('span', { class: 'grow' },
             h('b', null, '這台裝置（預設）'),
             h('span', { class: 'd' }, '匯入一次就會記住，沒有網路也能練習。手機和電腦的資料各自獨立，可用「設定 → 匯出備份」搬到其他裝置。'))),
-        h('div', { class: 'storage-opt disabled', 'aria-disabled': 'true' },
-          h('span', { class: 'radio' }), h('span', { class: 'grow' },
-            h('b', null, '我的 Google 雲端硬碟 ', h('span', { class: 'badge muted' }, '下一版開放')),
-            h('span', { class: 'd' }, '題庫存在你自己的雲端硬碟，手機、平板、電腦自動同步。'))),
+        cloudAvailable()
+          ? h('button', { class: `storage-opt ${s.storage === 'gdrive' ? 'on' : ''}`, onclick: () => { s.storage = 'gdrive'; draw(); } },
+            h('span', { class: 'radio' }), h('span', { class: 'grow' },
+              h('b', null, '這台裝置＋我的 Google 雲端硬碟'),
+              h('span', { class: 'd' }, '資料一樣存在這台裝置（沒網路也能練習），另外同步一份到你自己的 Google 雲端硬碟，手機、平板、電腦用同一份題庫。已經在其他裝置用過的話選這個，題目會自動下載。')))
+          : h('div', { class: 'storage-opt disabled', 'aria-disabled': 'true' },
+            h('span', { class: 'radio' }), h('span', { class: 'grow' },
+              h('b', null, '我的 Google 雲端硬碟'),
+              h('span', { class: 'd' }, '需要用正式網址（https）開啟才能使用。'))),
       ),
+      s.storage === 'gdrive' ? h('p', { class: 'small muted', style: { margin: '10px 2px 0' } },
+        '按「完成」後會跳到 Google，請選擇帳號並按「繼續」允許錯題閃卡使用它在雲端硬碟裡的專用資料夾（看不到你的其他檔案）。') : null,
       !installed ? h('div', { class: 'banner info', style: { marginTop: '14px' } }, icon('download'),
         h('div', null, h('div', { class: 't' }, '建議安裝到主畫面'),
           h('div', { class: 'd' }, isIOS
@@ -247,6 +255,11 @@ export async function render({ root }) {
         if (res.ok) state.user = await api.put('/api/profile/google', { google: { ...s.google, registeredAt: new Date().toISOString() } });
         else if (!res.skipped) toast('註冊登記稍後會自動補送', '');
       }
+      if (s.storage === 'gdrive' && cloudAvailable() && !cloudStatus().enabled) {
+        connectDrive({ intent: 'enable', back: '#/', hint: s.google?.email || '' }); // 跳到 Google 授權，回來後自動同步
+        return;
+      }
+      if (s.storage === 'device' && cloudStatus().enabled) await turnOffSync();
       toast('設定完成！先匯入題庫吧', 'ok');
       navigate('#/', { replace: true });
     } catch (err) {

@@ -1,7 +1,7 @@
 // 本機引擎：用與伺服器版相同的 API 路徑與回應格式，資料全部存在這台裝置（IndexedDB）。
 // 畫面程式只要呼叫 api.get('/api/...')，不需要知道資料在哪裡。
 import { ApiError } from './errors.js';
-import { all, mem, openDb, requestPersistence, storageStatus, write } from './db.js';
+import { all, markLocalChange, mem, openDb, requestPersistence, storageStatus, write } from './db.js';
 import { buildPaper, extractText } from './exam.js';
 import { buildTemplate, parseWorkbook } from './importer.js';
 import { GRADES, MASTERED_DAYS, newCard, schedule } from './srs.js';
@@ -57,9 +57,16 @@ function profile() {
   return { ...DEFAULT_PROFILE, ...(mem.meta.get('profile') || {}) };
 }
 
+const PREF_KEYS = ['nickname', 'exam', 'newPerDay', 'shuffleOptions'];
+
 async function saveProfile(changes) {
-  const p = { ...profile(), ...changes, key: 'profile' };
+  const old = profile();
+  const p = { ...old, ...changes, key: 'profile' };
+  // 暱稱、考試、每日新題數、洗牌會同步到其他裝置：記下修改時間
+  const prefsChanged = PREF_KEYS.some((k) => k in changes && changes[k] !== old[k]);
+  if (prefsChanged) p.prefsMtime = Date.now();
   await write([{ op: 'put', store: 'meta', value: p }]);
+  if (prefsChanged) markLocalChange();
   return p;
 }
 
@@ -421,9 +428,17 @@ route('POST', '/api/backup/restore', async ({ body }) => {
   return { ok: true, subjects: mem.subjects.size, questions: mem.questions.size };
 });
 
+/**
+ * 只清除這台裝置。開著雲端同步的話一併停止同步（雲端的資料不動）：
+ * 不然下次同步會把雲端的資料也當成要刪除，或馬上又全部下載回來。
+ */
 route('POST', '/api/data/clear', async () => {
-  await write(['subjects', 'papers', 'questions', 'cards', 'reviews'].map((store) => ({ op: 'clear', store })));
-  return { ok: true };
+  const ops = ['subjects', 'papers', 'questions', 'cards', 'reviews', 'tombstones'].map((store) => ({ op: 'clear', store }));
+  const sync = mem.meta.get('sync');
+  if (sync) ops.push({ op: 'put', store: 'meta', value: { ...sync, enabled: false, lastSyncAt: null, fileId: null } });
+  if (sync?.enabled) ops.push({ op: 'put', store: 'meta', value: { ...profile(), storage: 'device' } });
+  await write(ops, { sync: true });
+  return { ok: true, syncStopped: Boolean(sync?.enabled) };
 });
 
 // ---------------------------------------------------------------- 首頁、出題、作答、統計

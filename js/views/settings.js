@@ -1,5 +1,8 @@
 import { api, MODE } from '../api.js';
 import { navigate } from '../app.js';
+import {
+  agoText, cloudAvailable, cloudStatus, connectDrive, onCloudStatus, refreshCloudStatus, syncNow, turnOffSync, useOtherAccount,
+} from '../cloud.js';
 import { googleUsable, renderGoogleButton, sendRegistration } from '../google.js';
 import { invalidateSubjects, loadSubjects, prefs, state } from '../store.js';
 import {
@@ -11,6 +14,7 @@ const LOCAL = MODE === 'local';
 export async function render({ root }) {
   const main = h('main', { class: 'page' });
   clear(root, topbar({ title: '設定' }), main);
+  let offCloud = null;
 
   const draw = async () => {
     const user = state.user;
@@ -82,11 +86,11 @@ export async function render({ root }) {
         icon('chevron'),
       ))) : h('div', { class: 'card muted small' }, '還沒有科目，新增題目或匯入題庫時會自動建立。'),
 
+      LOCAL ? h('div', { class: 'section-title' }, '雲端同步') : null,
+      LOCAL ? cloudSection() : null,
+
       h('div', { class: 'section-title' }, '資料'),
       h('div', { class: 'list' },
-        LOCAL ? h('div', { class: 'row' }, icon('book'),
-          h('span', { class: 'grow' }, h('div', null, '存放位置：這台裝置'),
-            h('div', { class: 'sub' }, '題庫與紀錄只存在這個瀏覽器／App 裡。換裝置或重灌前請先匯出備份；Google 雲端同步下一版開放。'))) : null,
         h('a', { class: 'row', href: '#/import' }, icon('upload'), h('span', { class: 'grow' }, '匯入 Excel 訂正本'), icon('chevron')),
         h('a', { class: 'row', href: '#/papers/upload' }, icon('file'), h('span', { class: 'grow' }, '上傳考古題'), icon('chevron')),
         h('button', { class: 'row', onclick: () => downloadTemplate().catch(showError) }, icon('file'), h('span', { class: 'grow' }, '下載 Excel 匯入範本'), icon('chevron')),
@@ -110,6 +114,93 @@ export async function render({ root }) {
         LOCAL ? ' · ' : null, LOCAL ? h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener' }, '隱私權政策與使用條款') : null),
     );
   };
+
+  // ---- 雲端同步
+  function cloudSection() {
+    const host = h('div');
+    offCloud?.();
+    offCloud = onCloudStatus((st) => clear(host, cloudRows(st)));
+    clear(host, cloudRows(cloudStatus()));
+    return host;
+  }
+
+  function cloudRows(st) {
+    if (!cloudAvailable()) {
+      return h('div', { class: 'list' }, h('div', { class: 'row' }, icon('book'),
+        h('span', { class: 'grow' }, h('div', null, '存放位置：這台裝置'),
+          h('div', { class: 'sub' }, window.FC_CONFIG?.googleClientId
+            ? '雲端同步需要用正式網址（https）開啟。換裝置或重灌前請先匯出備份。'
+            : '開發者尚未設定 Google 登入，暫時不能使用雲端同步。換裝置或重灌前請先匯出備份。'))));
+    }
+    if (!st.enabled) {
+      return h('div', { class: 'list' }, h('button', { class: 'row', onclick: openEnable }, icon('cloud'),
+        h('span', { class: 'grow' }, h('div', null, '開啟 Google 雲端硬碟同步'),
+          h('div', { class: 'sub' }, '目前資料只存在這台裝置。開啟後，手機、平板、電腦都用同一份題庫和練習紀錄')),
+        icon('chevron')));
+    }
+    const busy = st.phase === 'syncing';
+    const detail = busy ? st.progress || '同步中…'
+      : st.phase === 'needs-auth' ? (st.pending ? '有新的變動還沒同步，請按「同步」' : 'Google 授權約 1 小時有效，按「同步」繼續')
+        : st.phase === 'error' ? st.message
+          : `上次同步：${agoText(st.lastSyncAt)}`;
+    return h('div', { class: 'list' },
+      h('div', { class: 'row' }, icon(st.phase === 'error' ? 'alert' : 'cloud'),
+        h('span', { class: 'grow' }, h('div', null, '雲端同步：開啟'),
+          h('div', { class: 'sub' }, st.email || 'Google 雲端硬碟'),
+          h('div', { class: busy ? 'cloud-progress' : 'sub' }, detail)),
+        h('button', { class: 'btn btn-sm', disabled: busy, onclick: () => syncNow({ interactive: true }) }, icon('refresh'), busy ? '同步中' : '同步')),
+      st.code === 'account' ? h('div', { class: 'row' }, h('span', { class: 'grow' },
+        h('div', { class: 'sub' }, '要改用這個帳號同步嗎？這台裝置的資料會合併到新帳號的雲端；或重新選擇原本的帳號。'),
+        h('div', { class: 'btn-row', style: { marginTop: '8px', justifyContent: 'flex-start' } },
+          h('button', { class: 'btn btn-sm btn-primary', onclick: () => useOtherAccount() }, `改用 ${st.otherEmail}`),
+          h('button', { class: 'btn btn-sm', onclick: () => connectDrive({ intent: 'sync', back: '#/settings', selectAccount: true }) }, '重新選擇帳號')))) : null,
+      st.code === 'api-disabled' ? h('div', { class: 'row' }, h('span', { class: 'grow' }, h('div', { class: 'sub' },
+        'Google Cloud 還沒開啟「Google Drive API」。請通知開發者照《上線步驟》第 5 步設定，資料仍然保存在這台裝置，不會遺失。'))) : null,
+      h('button', { class: 'row', onclick: openDisable }, icon('cloudOff'), h('span', { class: 'grow' }, '關閉這台裝置的雲端同步'), icon('chevron')),
+    );
+  }
+
+  function openEnable() {
+    openSheet((close) => h('div', null,
+      h('h3', null, '開啟 Google 雲端硬碟同步'),
+      h('p', { class: 'msg small' },
+        '題目、考古題、筆記和練習紀錄會存到你自己的 Google 雲端硬碟裡一個「App 專用」的隱藏資料夾：只有錯題閃卡讀得到，開發者看不到；App 也看不到你雲端硬碟裡的其他檔案。'),
+      h('ol', { class: 'cloud-steps' },
+        h('li', null, '按下面的按鈕會跳到 Google，選擇帳號後按「繼續」或「允許」'),
+        h('li', null, '每一台要用的裝置（手機、電腦）都要開啟一次，而且要選同一個 Google 帳號'),
+        h('li', null, '這台裝置原本的題目會和雲端合併，不會被刪掉；兩邊都有的同一題會合成一題'),
+        h('li', null, 'Google 的授權大約 1 小時有效，之後打開 App 時點一下「同步」就好，不用重新輸入密碼'),
+      ),
+      h('div', { class: 'btn-row' },
+        h('button', { class: 'btn', onclick: () => close() }, '取消'),
+        h('button', { class: 'btn btn-primary', onclick: () => { close(); connectDrive({ intent: 'enable', back: '#/settings' }); } }, icon('cloud'), '前往 Google 授權')),
+    ));
+  }
+
+  function openDisable() {
+    openSheet((close) => {
+      const off = async (deleteCloud) => {
+        close();
+        if (deleteCloud && !(await confirmDialog({
+          title: '刪除雲端硬碟裡的資料？', ok: '刪除雲端資料', danger: true,
+          message: '雲端硬碟裡的錯題閃卡資料會全部刪除，其他裝置也無法再同步這些資料；這台裝置上的題目和紀錄會保留。',
+        }))) return;
+        try {
+          if (await turnOffSync({ deleteCloud })) toast(deleteCloud ? '已關閉同步，並刪除雲端資料' : '已關閉這台裝置的雲端同步', 'ok');
+          draw();
+        } catch (err) { showError(err); }
+      };
+      return h('div', null,
+        h('h3', null, '關閉雲端同步？'),
+        h('p', { class: 'msg small' }, '這台裝置的題目和紀錄會保留，之後只存在這台裝置；雲端硬碟裡的資料也會保留，其他裝置照常同步。'),
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn', onclick: () => close() }, '取消'),
+          h('button', { class: 'btn btn-primary', onclick: () => off(false) }, '關閉同步')),
+        h('button', { class: 'btn btn-ghost btn-block', style: { marginTop: '10px', color: 'var(--bad)' }, onclick: () => off(true) },
+          icon('trash'), '關閉並刪除雲端硬碟裡的資料'),
+      );
+    });
+  }
 
   function googleRow(user) {
     const g = user.google;
@@ -237,7 +328,9 @@ export async function render({ root }) {
       input.remove();
       if (!file) return;
       const ok = await confirmDialog({
-        title: '從備份還原？', message: `會用「${file.name}」取代這台裝置上目前所有的題目、考古題與練習紀錄。`, ok: '還原', danger: true,
+        title: '從備份還原？', ok: '還原', danger: true,
+        message: `會用「${file.name}」取代這台裝置上目前所有的題目、考古題與練習紀錄。${cloudStatus().enabled
+          ? '已開啟雲端同步：還原的資料會和雲端合併，雲端上其他的題目也會同步回來。' : ''}`,
       });
       if (!ok) return;
       try {
@@ -257,14 +350,18 @@ export async function render({ root }) {
   }
 
   async function clearAll() {
+    const syncing = cloudStatus().enabled;
     const ok = await confirmDialog({
-      title: '清除所有題目與紀錄？', message: '這台裝置上的科目、題目、考古題與練習紀錄會全部刪除，無法復原。建議先匯出備份。', ok: '全部清除', danger: true,
+      title: '清除所有題目與紀錄？', ok: '全部清除', danger: true,
+      message: `這台裝置上的科目、題目、考古題與練習紀錄會全部刪除，無法復原。建議先匯出備份。${syncing
+        ? '這台裝置的雲端同步也會關閉；雲端硬碟裡的資料不會被刪除（要刪除請用「關閉這台裝置的雲端同步」裡的選項）。' : ''}`,
     });
     if (!ok) return;
     try {
-      await api.post('/api/data/clear');
+      const res = await api.post('/api/data/clear');
       invalidateSubjects();
-      toast('已清除');
+      await refreshCloudStatus();
+      toast(res.syncStopped ? '已清除；這台裝置的雲端同步已關閉' : '已清除');
       draw();
     } catch (err) { showError(err); }
   }
@@ -304,4 +401,5 @@ export async function render({ root }) {
   }
 
   await draw();
+  return () => offCloud?.();
 }
