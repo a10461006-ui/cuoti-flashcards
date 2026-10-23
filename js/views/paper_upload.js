@@ -14,7 +14,12 @@ export async function render({ root }) {
   const state = {
     qText: '', aText: '', qFile: '', aFile: '', figures: [], busy: false,
     preview: null, title: '', year: '', exam: '', subject: '', touched: new Set(), expanded: new Set(),
+    excluded: new Set(), // 取消勾選、不要建立的題號（預設全部勾選）
   };
+  // 伺服器版不支援只建立部分題目，只有本機版顯示勾選框
+  const SELECTABLE = MODE === 'local';
+  const selectable = (q) => q.duplicate !== 'paper';
+  const chosen = () => (state.preview ? state.preview.questions.filter((q) => selectable(q) && !state.excluded.has(q.number)) : []);
   let token = 0;
 
   const main = h('main', { class: 'page bare' });
@@ -199,6 +204,8 @@ export async function render({ root }) {
       });
       if (my !== token) return;
       state.preview = p;
+      const nums = new Set(p.questions.map((q) => q.number));
+      for (const n of [...state.excluded]) if (!nums.has(n)) state.excluded.delete(n);
       if (!state.touched.has('title')) state.title = p.meta.title || state.qFile.replace(/\.[^.]+$/, '') || '考古題';
       if (!state.touched.has('year')) state.year = p.meta.year;
       if (!state.touched.has('exam')) state.exam = p.meta.exam;
@@ -243,6 +250,16 @@ export async function render({ root }) {
 
     const list = h('div', { class: 'list paper-preview' });
     for (const q of p.questions) list.append(previewRow(q));
+    const pickable = p.questions.filter(selectable).length;
+    const setAll = (on) => {
+      state.excluded = on ? new Set() : new Set(p.questions.filter(selectable).map((q) => q.number));
+      drawPreview();
+      drawBar();
+    };
+    const pickBar = SELECTABLE && p.questions.length ? h('div', { class: 'pick-bar' },
+      h('span', { class: 'count', id: 'pick-count' }, pickText(pickable)),
+      h('button', { type: 'button', class: 'btn btn-sm', onclick: () => setAll(true) }, '全選'),
+      h('button', { type: 'button', class: 'btn btn-sm', onclick: () => setAll(false) }, '取消全選')) : null;
 
     clear(previewHost,
       h('div', { class: 'card', style: { marginTop: '12px' } },
@@ -268,14 +285,20 @@ export async function render({ root }) {
           field('exam', '考試', { maxlength: 40, placeholder: '司法官考試第一試' })),
         h('label', { class: 'field' }, h('span', { class: 'lbl' }, '放在哪個科目'), subjectSelect),
       ),
-      h('div', { class: 'section-title' }, h('span', null, `題目預覽（${s.total}）`), h('span', null, '點一下看完整內容')),
+      h('div', { class: 'section-title' }, h('span', null, `題目預覽（${s.total}）`), h('span', null, SELECTABLE ? '勾選要建立的題目，點題目看完整內容' : '點一下看完整內容')),
+      pickBar,
       p.questions.length ? list : h('div', { class: 'card empty' }, h('p', null, '沒有解析到題目。請確認每一題都以「題號＋空白」開頭，例如「1 下列…」或「1. 下列…」。')),
     );
   }
 
+  function pickText(pickable) {
+    return `已勾選 ${chosen().length}／${pickable} 題`;
+  }
+
   function previewRow(q) {
     const open = state.expanded.has(q.number);
-    const row = h('div', { class: `pv-row ${open ? 'open' : ''}` });
+    const on = selectable(q) && !state.excluded.has(q.number);
+    const row = h('div', { class: `pv-row ${open ? 'open' : ''} ${SELECTABLE && !on ? 'off' : ''}` });
     const head = h('button', { class: 'pv-head', onclick: () => {
       if (state.expanded.has(q.number)) state.expanded.delete(q.number); else state.expanded.add(q.number);
       row.replaceWith(previewRow(q));
@@ -283,10 +306,26 @@ export async function render({ root }) {
     h('span', { class: `num ${q.status}` }, q.number),
     h('span', { class: 'pv-stem' }, q.stem || '（沒有題目內容）'),
     q.images?.length ? h('span', { class: 'pv-img', title: '這題有圖片' }, icon('image')) : null,
-    q.answer ? h('span', { class: 'badge ok' }, `${q.multi ? '多選 ' : '答 '}${q.answer}`)
-      : h('span', { class: 'badge warn' }, q.multi ? '多選・無答案' : '無答案'),
+    q.duplicate === 'paper' ? h('span', { class: 'badge muted' }, '已上傳過')
+      : q.answer ? h('span', { class: 'badge ok' }, `${q.multi ? '多選 ' : '答 '}${q.answer}`)
+        : h('span', { class: 'badge warn' }, q.multi ? '多選・無答案' : '無答案'),
     );
-    row.append(head);
+    if (SELECTABLE) {
+      const box = h('input', {
+        type: 'checkbox', class: 'pv-check', checked: on, disabled: !selectable(q),
+        'aria-label': selectable(q) ? `建立第 ${q.number} 題` : `第 ${q.number} 題已上傳過，會略過`,
+      });
+      box.addEventListener('change', () => {
+        if (box.checked) state.excluded.delete(q.number); else state.excluded.add(q.number);
+        row.classList.toggle('off', !box.checked);
+        const count = document.getElementById('pick-count');
+        if (count) count.textContent = pickText(state.preview.questions.filter(selectable).length);
+        drawBar();
+      });
+      row.append(h('div', { class: 'pv-line' }, h('label', { class: 'pv-check-wrap' }, box), head));
+    } else {
+      row.append(head);
+    }
     if (open) {
       row.append(h('div', { class: 'pv-body' },
         q.statusNote ? h('div', { class: 'small', style: { color: 'var(--warn)', marginBottom: '8px' } }, q.statusNote) : null,
@@ -304,11 +343,13 @@ export async function render({ root }) {
 
   function drawBar() {
     const p = state.preview;
-    const creatable = p ? p.questions.filter((q) => q.duplicate !== 'paper').length : 0;
+    const creatable = SELECTABLE ? chosen().length : p ? p.questions.filter(selectable).length : 0;
+    const label = !p ? '請先上傳或貼上試題'
+      : !creatable && SELECTABLE && p.questions.some(selectable) ? '請至少勾選一題' : `建立考古題卷（${creatable} 題）`;
     const btn = h('button', {
       class: 'btn btn-primary btn-lg', disabled: !creatable || !state.title.trim(),
       onclick: create,
-    }, icon('check'), p ? `建立考古題卷（${creatable} 題）` : '請先上傳或貼上試題');
+    }, icon('check'), label);
     clear(bar, h('div', { class: 'inner' }, btn));
   }
 
@@ -320,6 +361,7 @@ export async function render({ root }) {
       const res = await api.post('/api/papers', {
         questionsText: state.qText, answersText: state.aText, filename: state.qFile, ...figurePayload(),
         title: state.title.trim(), year: state.year.trim(), exam: state.exam.trim(), ...subject,
+        ...(SELECTABLE ? { numbers: chosen().map((q) => q.number) } : {}),
       });
       invalidateSubjects();
       state.qText = '';

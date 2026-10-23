@@ -370,8 +370,8 @@ async function parseUpload(body, filename) {
 route('POST', '/api/import/preview', async ({ query, body }) => {
   const parsed = await parseUpload(body, query.filename || '');
   const hashes = new Set(all('questions').map((q) => q.contentHash));
-  const items = parsed.questions.map((q) => ({
-    row: q.row, source: q.source, stem: q.stem.slice(0, 140), status: q.status, statusNote: q.statusNote,
+  const items = parsed.questions.map((q, index) => ({
+    index, row: q.row, source: q.source, stem: q.stem.slice(0, 140), status: q.status, statusNote: q.statusNote,
     answer: q.answer, optionCount: q.options.length, duplicate: hashes.has(q.contentHash),
   }));
   return {
@@ -380,19 +380,24 @@ route('POST', '/api/import/preview', async ({ query, body }) => {
   };
 });
 
+/** only：只匯入勾選的題目（預覽回傳的 index，用逗號分開）；沒有帶就全部匯入 */
 route('POST', '/api/import/commit', async ({ query, body }) => {
   const parsed = await parseUpload(body, query.filename || '');
+  const only = query.only != null ? new Set(String(query.only).split(',').filter((x) => /^\d+$/.test(x)).map(Number)) : null;
+  if (only && !only.size) fail(400, '請至少勾選一題');
   const subjectId = await getOrCreateSubject(query.subject || parsed.subject, query.category || '');
   const existing = new Set(all('questions').filter((q) => q.subjectId === subjectId).map((q) => q.contentHash));
   const ops = [];
   let skipped = 0;
-  for (const q of parsed.questions) {
+  let unselected = 0;
+  for (const [index, q] of parsed.questions.entries()) {
+    if (only && !only.has(index)) { unselected += 1; continue; }
     if (existing.has(q.contentHash)) { skipped += 1; continue; }
     existing.add(q.contentHash);
     ops.push({ op: 'add', store: 'questions', value: newQuestionRecord(subjectId, q, `import:${parsed.filename}#${q.sheet}!R${q.row}`) });
   }
   await write(ops);
-  return { subjectId, inserted: ops.length, skippedDuplicates: skipped };
+  return { subjectId, inserted: ops.length, skippedDuplicates: skipped, skippedUnselected: unselected };
 });
 
 route('GET', '/api/import/template', () => new Blob([buildTemplate()], {
@@ -663,10 +668,13 @@ route('POST', '/api/papers/preview', ({ body }) => {
 route('POST', '/api/papers', async ({ body }) => {
   const parsed = parsePaper(body);
   if (!parsed.questions.length) fail(400, '沒有解析到任何題目，請確認試題內容');
+  // numbers：只建立勾選的題號；沒有帶就全部建立
+  const pick = Array.isArray(body.numbers) ? new Set(body.numbers.map(Number)) : null;
+  if (pick && !pick.size) fail(400, '請至少勾選一題');
+  const creatable = parsed.questions.filter((q) => q.duplicate !== 'paper' && (!pick || pick.has(q.number)));
+  if (!creatable.length) fail(409, pick ? '勾選的題目都已經上傳過了' : '這份考古題的題目都已經上傳過了');
   const subjectId = body.subjectId ? ownSubject(Number(body.subjectId)).id
     : body.subjectName && String(body.subjectName).trim() ? await getOrCreateSubject(body.subjectName) : fail(400, '請選擇科目');
-  const creatable = parsed.questions.filter((q) => q.duplicate !== 'paper');
-  if (!creatable.length) fail(409, '這份考古題的題目都已經上傳過了');
   const title = str(body.title, 80).trim() || fail(400, '請輸入考古題名稱');
   const [paperId] = await write([{ op: 'add', store: 'papers', value: { subjectId, title, year: str(body.year, 10).trim(), exam: str(body.exam, 40).trim(), createdAt: nowIso() } }]);
   const ops = [];

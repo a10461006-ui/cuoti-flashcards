@@ -819,3 +819,17 @@ button.opt:active { background: var(--surface-2); transform: scale(.995); }
 
 /* 確認答案時的「這題是多選題」開關 */
 .multi-toggle { gap: 12px; margin: 4px 0 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+
+/* 匯入時勾選要建立／匯入的題目（預設全部勾選） */
+.pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 2px 10px; }
+.pick-bar .count { flex: 1 1 auto; min-width: 0; font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.pv-check { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+.pv-check:disabled { cursor: not-allowed; }
+.pv-line { display: flex; align-items: stretch; }
+.pv-check-wrap { flex: none; display: flex; align-items: center; padding: 0 0 0 14px; cursor: pointer; }
+.pv-line .pv-head { padding-left: 10px; }
+.pv-line ~ .pv-body { padding-left: 64px; }
+.pv-row.off .pv-head, .pick-it.off { opacity: .55; }
+.pick-list .pick-it { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.pick-list .pick-it .pv-check { margin-top: 3px; }
+.pick-list .why.muted { color: var(--text-3); }
