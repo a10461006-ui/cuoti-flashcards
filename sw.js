@@ -1,6 +1,6 @@
 // 離線支援：第一次開啟就把整個 App 存起來，之後沒有網路也能使用。
 // 策略是「網路優先」：有網路時永遠拿最新版本，離線才用快取。PDF 函式庫第一次使用時才快取。
-const CACHE = 'fc-fa23049404';
+const CACHE = 'fc-6fecaaf576';
 const SHELL = [
   './',
   'css/app.css',

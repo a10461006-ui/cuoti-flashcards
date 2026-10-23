@@ -816,3 +816,6 @@ button.opt:active { background: var(--surface-2); transform: scale(.995); }
 .cloud-steps { margin: 4px 0 12px; padding-left: 1.2em; color: var(--text-2); font-size: 14px; line-height: 1.7; }
 .cloud-steps li + li { margin-top: 2px; }
 .row .cloud-progress { font-size: 13px; color: var(--primary-text); }
+
+/* 確認答案時的「這題是多選題」開關 */
+.multi-toggle { gap: 12px; margin: 4px 0 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }

@@ -35,7 +35,13 @@ export function stemIsNegative(stem) {
   return NEG_STEM.test(tail);
 }
 
-/** 回傳 [答案代號, 狀態 ok/review, 說明] */
+// 題目自己標明是多選題：「（複選）」「【多選題】」「本題為複選題」
+const MULTI_STEM = /[（(【[]\s*(?:複選|多選|多重選擇)題?\s*[)）】\]]|本題\s*(?:為|是)?\s*(?:複選|多選|多重選擇)題?/;
+
+/**
+ * 回傳 [答案代號, 狀態 ok/review, 說明, 是否多選題]
+ * 多選題的答案是好幾個字母（ACD），練習時要全部選對才算對
+ */
 export function inferAnswer(stem, options) {
   const keys = options.map((o) => o.key);
   const pols = options.map((o) => markPolarity(o.mark));
@@ -43,30 +49,41 @@ export function inferAnswer(stem, options) {
   const target = !neg;
   const asked = neg ? '何者錯誤／不得' : '何者正確';
   const n = options.length;
+  const multiStem = MULTI_STEM.test(String(stem || ''));
 
   const explicit = options.filter((o) => EXPLICIT.test(o.mark || '')).map((o) => o.key);
-  if (explicit.length === 1) return [explicit[0], 'ok', ''];
+  if (explicit.length === 1 && !multiStem) return [explicit[0], 'ok', '', false];
+  if (explicit.length > 1 || (explicit.length && multiStem)) return [explicit.join(''), 'ok', '', true]; // 標了好幾個「正解」
 
   const marked = pols.filter((p) => p !== null);
+  if (multiStem) {
+    // 多選題：所有符合題目問法的選項都是答案
+    const all = keys.filter((_, i) => pols[i] === target);
+    if (all.length && marked.length === n) return [all.join(''), 'ok', '', true];
+    return [all.join(''), 'review', '多選題：有些選項沒有標記正確與否，請勾選所有正確的答案', true];
+  }
   // 全部都有標記、且只有一個跟其他不同 → 那個就是答案（不論標記習慣）
   if (n >= 3 && marked.length === n) {
     const nPos = pols.filter((p) => p === true).length;
     if (nPos === 1 || n - nPos === 1) {
       const odd = nPos === 1;
       const key = keys[pols.indexOf(odd)];
-      if (odd === target) return [key, 'ok', ''];
-      return [key, 'review', `選項標記與題目問法（${asked}）不一致，系統建議答案為 ${key}，請確認`];
+      if (odd === target) return [key, 'ok', '', false];
+      return [key, 'review', `選項標記與題目問法（${asked}）不一致，系統建議答案為 ${key}，請確認`, false];
     }
   }
   const matches = keys.filter((_, i) => pols[i] === target);
-  if (matches.length === 1) return [matches[0], 'ok', ''];
+  if (matches.length === 1) return [matches[0], 'ok', '', false];
   if (!matches.length) {
     const blanks = keys.filter((_, i) => pols[i] === null);
-    if (blanks.length === 1 && marked.length === n - 1) return [blanks[0], 'ok', ''];
+    if (blanks.length === 1 && marked.length === n - 1) return [blanks[0], 'ok', '', false];
   }
-  if (matches.length > 1) return ['', 'review', `有 ${matches.length} 個選項符合題目問法（${matches.join('、')}），請指定正確答案`];
-  if (!marked.length) return ['', 'review', '選項都沒有標記正確與否，請指定正確答案'];
-  return ['', 'review', '無法從選項標記判斷答案，請指定正確答案'];
+  if (matches.length > 1) {
+    // 好幾個選項都符合：可能是多選題，先當多選題把它們勾好，請使用者確認（單選題可以在確認畫面切回來）
+    return [matches.join(''), 'review', `有 ${matches.length} 個選項符合題目問法（${matches.join('、')}），可能是多選題：已先勾好，請確認；如果是單選題，關掉「多選題」再選一個`, true];
+  }
+  if (!marked.length) return ['', 'review', '選項都沒有標記正確與否，請指定正確答案', false];
+  return ['', 'review', '無法從選項標記判斷答案，請指定正確答案', false];
 }
 
 // ---------------------------------------------------------------- 解析
@@ -154,7 +171,7 @@ function finalize(q) {
     seen.add(o.key);
   });
 
-  let [answer, status, note] = inferAnswer(q.stem, q.options);
+  let [answer, status, note, multi] = inferAnswer(q.stem, q.options);
   if (!q.stem) {
     status = 'incomplete';
     note = '缺少題幹，請補上題目內容';
@@ -162,7 +179,7 @@ function finalize(q) {
     status = 'incomplete';
     note = `只記錄了 ${q.options.length} 個選項，請補齊其他選項`;
   }
-  Object.assign(q, { answer, status, statusNote: note, contentHash: contentHash(q.stem, q.options.map((o) => o.text)) });
+  Object.assign(q, { answer, multi: Boolean(multi), status, statusNote: note, contentHash: contentHash(q.stem, q.options.map((o) => o.text)) });
   return q;
 }
 

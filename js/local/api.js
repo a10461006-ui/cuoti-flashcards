@@ -326,6 +326,15 @@ route('PUT', '/api/questions/(\\d+)', async ({ params: [id], body }) => {
 route('PATCH', '/api/questions/(\\d+)', async ({ params: [id], body }) => {
   const q = { ...getQuestion(id) };
   if (body.starred != null) q.starred = Boolean(body.starred);
+  // 確認答案時可以一併改成多選題／單選題
+  if (body.multi != null) {
+    q.multi = Boolean(body.multi);
+    q.updatedAt = nowIso();
+    // 只改成單選、沒有給新答案：原本好幾個字母的答案不能用了，回到「需確認」
+    if (body.answer == null && !q.multi && String(q.answer || '').length > 1) {
+      Object.assign(q, { answer: '', status: 'review', statusNote: '已改成單選題，請點選正確答案' });
+    }
+  }
   if (body.answer != null) {
     // 先拿掉分隔符號，剩下的每個字母都必須是選項代號（不默默丟掉不存在的代號）
     const raw = String(body.answer).toUpperCase().replace(/[\s,，、]/g, '');

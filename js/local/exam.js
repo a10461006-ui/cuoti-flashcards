@@ -404,7 +404,10 @@ const SECTION_MARK = '\u0000section:';
 const RANGE_KIND = /第\s*(\d{1,3})\s*(?:題)?\s*(?:至|到|~|～|-|－)\s*(?:第)?\s*(\d{1,3})\s*題\s*(?:為|是|屬)?\s*(單一選擇題|單選題|多重選擇題|多選題|複選題)/g;
 const HAS_FIG = /\[圖\s*\d{1,3}\]/;
 const MAX_GAP = 5;
-const INLINE_ANS = /(?:[【[]\s*(?:答案|正解|解答)\s*[】\]]|(?:答案|正解|解答|答|Ans(?:wer)?)\s*[:：])\s*[（(]?\s*([A-E])(?![A-Za-z])/i;
+// 題目後面附的答案：「答案：C」，多選題「答案：ACD」「答案：A、C、D」（「A或C」只取第一個，另外處理）
+const INLINE_ANS = /(?:[【[]\s*(?:答案|正解|解答)\s*[】\]]|(?:答案|正解|解答|答|Ans(?:wer)?)\s*[:：])\s*[（(]?\s*([A-H](?:[ \t]*[、,，]?[ \t]*[A-H])*)(?![A-Za-z])/i;
+// 題目自己標明是多選題：「（複選）」「【多選題】」「本題為複選題」
+export const MULTI_STEM = /[（(【[]\s*(?:複選|多選|多重選擇)題?\s*[)）】\]]|本題\s*(?:為|是)?\s*(?:複選|多選|多重選擇)題?/;
 const EXPLAIN = /[【[]\s*(?:解析|詳解|解說|說明)\s*[】\]]|(?:解析|詳解|解說)\s*[:：]/;
 const PASSAGE = /[^。\n]{0,30}?回答\s*第\s*(\d{1,3})\s*題?\s*(?:至|到|~|～|-|－)\s*第?\s*(\d{1,3})\s*題/;
 const OPT_PAREN = /[（(]\s*([A-H])\s*[)）]/g;
@@ -551,7 +554,7 @@ export function parseQuestions(text) {
     const end = k + 1 < chain.length ? chain[k + 1].idx : lines.length;
     let block = [lines[c.idx].slice(c.col), ...lines.slice(c.idx + 1, end)].filter(notMark).join('\n');
     const range = ranges.find((r) => c.num >= r.from && c.num <= r.to);
-    const multi = kindAt[c.idx] ? kindAt[c.idx] === 'multi' : Boolean(range?.multi);
+    let multi = kindAt[c.idx] ? kindAt[c.idx] === 'multi' : Boolean(range?.multi);
     const figures = [...block.matchAll(FIG_MARK)].map((x) => Number(x[1]));
     block = block.replace(FIG_MARK, '');
     let concept = '';
@@ -563,10 +566,12 @@ export function parseQuestions(text) {
     let answer = c.answer;
     m = halfwidth(block).match(INLINE_ANS);
     if (m) {
-      answer = answer || m[1].toUpperCase();
+      answer = answer || m[1].toUpperCase().replace(/[^A-H]/g, '');
       block = block.slice(0, m.index) + block.slice(m.index + m[0].length);
     }
     let { stem, options, merged } = splitOptions(block);
+    // 題目標明「（複選）」，或附的答案有好幾個字母（ACD）：當成多選題
+    if (MULTI_STEM.test(halfwidth(stem)) || sortLetters(answer).length > 1) multi = true;
     if (options.length) {
       const last = options[options.length - 1];
       const [rest, p] = findPassage(last[1]);
@@ -705,9 +710,9 @@ export function parseAnswers(text, subject = '') {
     }
     if (raw.size) method = 'table';
   }
-  // 2) 「1.C 2.A」「1(C)」
+  // 2) 「1.C 2.A」「1(C)」；多選題「1.ACD」
   const pairs = new Map();
-  for (const m of body.matchAll(/(\d{1,3})\s*[.、:：)）-]?\s*[（(]?\s*([A-E](?:\s*或\s*[A-E])*)\s*[)）]?(?![A-Za-z])/g)) {
+  for (const m of body.matchAll(/(\d{1,3})\s*[.、:：)）-]?\s*[（(]?\s*([A-H]{2,8}|[A-E](?:\s*或\s*[A-E])*)\s*[)）]?(?![A-Za-z])/g)) {
     if (prevIs(body, m.index, /[\d.]/)) continue;
     const n = Number(m[1]);
     if (!pairs.has(n)) pairs.set(n, m[2]);
@@ -728,7 +733,8 @@ export function parseAnswers(text, subject = '') {
   const flagged = new Set();
   for (const [num, token] of raw) {
     if (/^(?:均給分|一律給分|送分)$/.test(token)) { free.add(num); continue; }
-    if (method === 'rows' && /^[A-H]{2,8}$/.test(token)) { sets.set(num, sortLetters(token)); continue; }
+    // 連在一起的好幾個字母（ACD）＝多選題，要全部選對；「A或C」才是「都算對」
+    if ((method === 'rows' || method === 'pairs') && /^[A-H]{2,8}$/.test(token)) { sets.set(num, sortLetters(token)); continue; }
     const ls = letters(token);
     if (ls.length === 1) answers.set(num, ls[0]);
     else if (ls.length > 1) multi.set(num, ls);
@@ -773,7 +779,7 @@ export function buildPaper(questionsText, answersText = '', filename = '', figur
   const out = parsed.questions.map((q) => {
     const n = q.number;
     const keys = q.options.map((o) => o.key);
-    const isMulti = Boolean(q.multi || key.sets.has(n));
+    const isMulti = Boolean(q.multi || key.sets.has(n) || sortLetters(q.inlineAnswer).length > 1);
     let answer = q.inlineAnswer || key.sets.get(n) || key.answers.get(n) || '';
     if (isMulti) answer = sortLetters(answer);
     const valid = (a) => Boolean(a) && [...a].every((ch) => keys.includes(ch));

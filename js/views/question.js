@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { goBack, navigate } from '../app.js';
 import { invalidateSubjects } from '../store.js';
-import { clear, confirmDialog, figureList, formatDue, h, icon, iconButton, rich, showError, toast, topbar } from '../ui.js';
+import { clear, confirmDialog, figureList, formatDue, h, icon, iconButton, rich, showError, switchInput, toast, topbar } from '../ui.js';
 import { startPractice } from './practice.js';
 
 export async function render({ root, params }) {
@@ -9,6 +9,7 @@ export async function render({ root, params }) {
   let q = await api.get(`/api/questions/${id}`);
   let nextReview = null; // 確認答案後，提示下一題待確認
   let picks = null; // 多選題確認答案時勾選的選項
+  let multiMode = Boolean(q.multi); // 確認答案時可以切換單選／多選
   const main = h('main', { class: 'page' });
   const header = h('div');
   clear(root, header, main);
@@ -23,6 +24,7 @@ export async function render({ root, params }) {
       ],
     }));
     const confirming = q.status === 'review';
+    const multi = confirming ? multiMode : Boolean(q.multi);
     const c = q.card;
 
     clear(main,
@@ -43,10 +45,13 @@ export async function render({ root, params }) {
         icon('file'), `${q.paperTitle} · 第 ${q.number} 題`, icon('chevron')) : null,
       rich(q.stem || '（沒有題幹）', 'q-stem'),
       figureList(q.images),
-      q.multi ? h('div', { class: 'multi-hint' }, icon('check'),
+      confirming ? h('label', { class: 'row-flex multi-toggle' },
+        h('div', { class: 'grow' }, h('b', null, '這題是多選題'), h('div', { class: 'small muted' }, '可以勾選好幾個答案，練習時要全部選對才算對')),
+        switchInput(multiMode, (v) => { multiMode = v; picks = null; draw(); }, '這題是多選題')) : null,
+      multi ? h('div', { class: 'multi-hint' }, icon('check'),
         confirming ? '多選題：勾選所有正確的選項，再按「確認答案」' : `多選題，正確答案：${[...(q.answer || '')].join('、') || '尚未設定'}`) : null,
-      h('div', { class: 'opts' }, q.options.map((o) => optionView(o, q, confirming))),
-      confirming && q.multi ? h('button', {
+      h('div', { class: 'opts' }, q.options.map((o) => optionView(o, q, confirming, multi))),
+      confirming && multi ? h('button', {
         class: 'btn btn-primary btn-block', style: { marginTop: '12px' }, disabled: !(picks || answerSet(q)).size,
         onclick: () => confirmAnswer([...(picks || answerSet(q))].sort().join('')),
       }, `確認答案：${[...(picks || answerSet(q))].sort().join('、') || '請先勾選'}`) : null,
@@ -78,9 +83,9 @@ export async function render({ root, params }) {
     return new Set(String(question.answer || ''));
   }
 
-  function optionView(o, question, confirming) {
+  function optionView(o, question, confirming, multi) {
     const isAnswer = answerSet(question).has(o.key);
-    if (confirming && question.multi) {
+    if (confirming && multi) {
       // 多選題確認答案：點選項勾選／取消，按下方按鈕確認（預設勾好系統建議的答案）
       const set = picks || answerSet(question);
       const on = set.has(o.key);
@@ -113,8 +118,9 @@ export async function render({ root, params }) {
     const ok = await confirmDialog({ title: `正確答案是 ${shown}？`, message: '確認後這題就會出現在練習中。', ok: `設為 ${shown}` });
     if (!ok) return;
     try {
-      q = await api.patch(`/api/questions/${q.id}`, { answer: key });
+      q = await api.patch(`/api/questions/${q.id}`, { answer: key, multi: multiMode });
       picks = null;
+      multiMode = Boolean(q.multi);
       invalidateSubjects();
       toast(q.status === 'ok' ? '已確認答案，可以開始練習了' : '已設定答案', 'ok');
       const rest = await api.get('/api/questions?status=review&sort=oldest&limit=1');
